@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/mongodb/mongo-go-driver/core/command"
+	"github.com/mongodb/mongo-go-driver/core/description"
 	"github.com/mongodb/mongo-go-driver/core/topology"
 	"github.com/mongodb/mongo-go-driver/internal/trace"
 )
@@ -14,7 +15,7 @@ func ListIndexes(
 	ctx context.Context,
 	cmd command.ListIndexes,
 	topo *topology.Topology,
-	selector topology.ServerSelector,
+	selector description.ServerSelector,
 ) (command.Cursor, error) {
 	ctx, span := trace.SpanFromFunctionCaller(ctx)
 	defer span.End()

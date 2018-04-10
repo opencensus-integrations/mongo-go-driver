@@ -5,6 +5,7 @@ import (
 
 	"github.com/mongodb/mongo-go-driver/bson"
 	"github.com/mongodb/mongo-go-driver/core/command"
+	"github.com/mongodb/mongo-go-driver/core/description"
 	"github.com/mongodb/mongo-go-driver/core/topology"
 	"github.com/mongodb/mongo-go-driver/internal/trace"
 )
@@ -15,7 +16,7 @@ func DropIndexes(
 	ctx context.Context,
 	cmd command.DropIndexes,
 	topo *topology.Topology,
-	selector topology.ServerSelector,
+	selector description.ServerSelector,
 ) (bson.Reader, error) {
 
 	ctx, span := trace.SpanFromFunctionCaller(ctx)
