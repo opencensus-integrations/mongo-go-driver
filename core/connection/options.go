@@ -1,6 +1,13 @@
+// Copyright (C) MongoDB, Inc. 2017-present.
+//
+// Licensed under the Apache License, Version 2.0 (the "License"); you may
+// not use this file except in compliance with the License. You may obtain
+// a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
+
 package connection
 
 import (
+	"net"
 	"time"
 )
 
@@ -19,7 +26,7 @@ type config struct {
 func newConfig(opts ...Option) (*config, error) {
 	cfg := &config{
 		connectTimeout: 30 * time.Second,
-		dialer:         DefaultDialer,
+		dialer:         nil,
 		idleTimeout:    10 * time.Minute,
 		lifeTimeout:    30 * time.Minute,
 	}
@@ -29,6 +36,10 @@ func newConfig(opts ...Option) (*config, error) {
 		if err != nil {
 			return nil, err
 		}
+	}
+
+	if cfg.dialer == nil {
+		cfg.dialer = &net.Dialer{Timeout: cfg.connectTimeout}
 	}
 
 	return cfg, nil

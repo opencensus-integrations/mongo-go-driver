@@ -1,3 +1,9 @@
+// Copyright (C) MongoDB, Inc. 2017-present.
+//
+// Licensed under the Apache License, Version 2.0 (the "License"); you may
+// not use this file except in compliance with the License. You may obtain
+// a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
+
 package command
 
 import (
@@ -33,7 +39,10 @@ func (ld *ListDatabases) Encode(desc description.SelectedServer) (wiremessage.Wi
 		if opt == nil {
 			continue
 		}
-		opt.Option(cmd)
+		err := opt.Option(cmd)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	return (&Command{DB: "admin", Command: cmd, isWrite: true}).Encode(desc)

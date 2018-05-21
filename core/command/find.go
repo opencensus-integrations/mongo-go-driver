@@ -1,3 +1,9 @@
+// Copyright (C) MongoDB, Inc. 2017-present.
+//
+// Licensed under the Apache License, Version 2.0 (the "License"); you may
+// not use this file except in compliance with the License. You may obtain
+// a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
+
 package command
 
 import (
@@ -38,6 +44,7 @@ func (f *Find) Encode(desc description.SelectedServer) (wiremessage.WireMessage,
 
 	var limit int64
 	var batchSize int32
+	var err error
 
 	for _, option := range f.Opts {
 		switch t := option.(type) {
@@ -45,14 +52,17 @@ func (f *Find) Encode(desc description.SelectedServer) (wiremessage.WireMessage,
 			continue
 		case options.OptLimit:
 			limit = int64(t)
-			option.Option(command)
+			err = option.Option(command)
 		case options.OptBatchSize:
 			batchSize = int32(t)
-			option.Option(command)
+			err = option.Option(command)
 		case options.OptProjection:
-			t.IsFind().Option(command)
+			err = t.IsFind().Option(command)
 		default:
-			option.Option(command)
+			err = option.Option(command)
+		}
+		if err != nil {
+			return nil, err
 		}
 	}
 

@@ -74,6 +74,9 @@ func (co *ClientOptions) AuthSource(s string) *ClientOptions {
 }
 
 // ConnectTimeout specifies the timeout for an initial connection to a server.
+// If a custom Dialer is used, this method won't be set and the user is
+// responsible for setting the ConnectTimeout for connections on the dialer
+// themselves.
 func (co *ClientOptions) ConnectTimeout(d time.Duration) *ClientOptions {
 	var fn option = func(c *Client) error {
 		if !c.connString.ConnectTimeoutSet {
@@ -238,6 +241,18 @@ func (co *ClientOptions) ReadPreferenceTagSets(m []map[string]string) *ClientOpt
 	var fn option = func(c *Client) error {
 		if c.connString.ReadPreferenceTagSets == nil {
 			c.connString.ReadPreferenceTagSets = m
+		}
+		return nil
+	}
+	return &ClientOptions{next: co, opt: fn}
+}
+
+//MaxStaleness sets the "maxStaleness" field of the read pref to set on the client.
+func (co *ClientOptions) MaxStaleness(d time.Duration) *ClientOptions {
+	var fn option = func(c *Client) error {
+		if !c.connString.MaxStalenessSet {
+			c.connString.MaxStaleness = d
+			c.connString.MaxStalenessSet = true
 		}
 		return nil
 	}

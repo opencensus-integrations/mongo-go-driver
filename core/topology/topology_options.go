@@ -1,3 +1,9 @@
+// Copyright (C) MongoDB, Inc. 2017-present.
+//
+// Licensed under the Apache License, Version 2.0 (the "License"); you may
+// not use this file except in compliance with the License. You may obtain
+// a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
+
 package topology
 
 import (
@@ -44,6 +50,11 @@ func WithConnString(fn func(connstring.ConnString) connstring.ConnString) Option
 	return func(c *config) error {
 		cs := fn(c.cs)
 		c.cs = cs
+
+		if cs.ServerSelectionTimeoutSet {
+			c.serverSelectionTimeout = cs.ServerSelectionTimeout
+		}
+
 		var connOpts []connection.Option
 
 		if cs.AppName != "" {
@@ -59,6 +70,14 @@ func WithConnString(fn func(connstring.ConnString) connstring.ConnString) Option
 
 		if cs.ConnectTimeout > 0 {
 			connOpts = append(connOpts, connection.WithConnectTimeout(func(time.Duration) time.Duration { return cs.ConnectTimeout }))
+		}
+
+		if cs.SocketTimeoutSet {
+			connOpts = append(
+				connOpts,
+				connection.WithReadTimeout(func(time.Duration) time.Duration { return cs.SocketTimeout }),
+				connection.WithWriteTimeout(func(time.Duration) time.Duration { return cs.SocketTimeout }),
+			)
 		}
 
 		if cs.HeartbeatInterval > 0 {

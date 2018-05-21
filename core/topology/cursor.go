@@ -1,3 +1,9 @@
+// Copyright (C) MongoDB, Inc. 2017-present.
+//
+// Licensed under the Apache License, Version 2.0 (the "License"); you may
+// not use this file except in compliance with the License. You may obtain
+// a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
+
 package topology
 
 import (
@@ -73,6 +79,10 @@ func (c *cursor) ID() int64 {
 }
 
 func (c *cursor) Next(ctx context.Context) bool {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	c.current++
 	if c.current < c.batch.Len() {
 		return true
@@ -121,6 +131,7 @@ func (c *cursor) Close(ctx context.Context) error {
 
 	_, err = (&command.KillCursors{NS: c.namespace, IDs: []int64{c.id}}).RoundTrip(ctx, c.server.SelectedDescription(), conn)
 	if err != nil {
+		_ = conn.Close() // The command response error is more important here
 		return err
 	}
 
@@ -145,6 +156,7 @@ func (c *cursor) getMore(ctx context.Context) {
 
 	response, err := (&command.GetMore{ID: c.id, NS: c.namespace, Opts: c.opts}).RoundTrip(ctx, c.server.SelectedDescription(), conn)
 	if err != nil {
+		_ = conn.Close() // The command response error is more important here
 		c.err = err
 		return
 	}

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"time"
 
 	"github.com/mongodb/mongo-go-driver/bson/decimal"
 	"github.com/mongodb/mongo-go-driver/bson/elements"
@@ -64,7 +65,7 @@ func (ElementConstructor) Interface(key string, value interface{}) *Element {
 		switch {
 		case t < math.MaxInt32:
 			elem = EC.Int32(key, int32(t))
-		case t > math.MaxInt64:
+		case uint64(t) > math.MaxInt64:
 			elem = EC.Null(key)
 		default:
 			elem = EC.Int64(key, int64(t))
@@ -128,7 +129,7 @@ func (c ElementConstructor) InterfaceErr(key string, value interface{}) (*Elemen
 		switch {
 		case t < math.MaxInt32:
 			elem = EC.Int32(key, int32(t))
-		case t > math.MaxInt64:
+		case uint64(t) > math.MaxInt64:
 			err = fmt.Errorf("BSON only has signed integer types and %d overflows an int64", t)
 		default:
 			elem = EC.Int64(key, int64(t))
@@ -137,7 +138,7 @@ func (c ElementConstructor) InterfaceErr(key string, value interface{}) (*Elemen
 		switch {
 		case t < math.MaxInt32:
 			elem = EC.Int32(key, int32(t))
-		case t > math.MaxInt64:
+		case uint64(t) > math.MaxInt64:
 			err = fmt.Errorf("BSON only has signed integer types and %d overflows an int64", t)
 		default:
 			elem = EC.Int64(key, int64(t))
@@ -325,6 +326,7 @@ func (ElementConstructor) Boolean(key string, b bool) *Element {
 }
 
 // DateTime creates a datetime element with the given key and value.
+// dt represents milliseconds since the Unix epoch
 func (ElementConstructor) DateTime(key string, dt int64) *Element {
 	size := uint32(1 + len(key) + 1 + 8)
 	elem := newElement(0, 1+uint32(len(key))+1)
@@ -336,6 +338,11 @@ func (ElementConstructor) DateTime(key string, dt int64) *Element {
 	}
 
 	return elem
+}
+
+// Time creates a datetime element with the given key and value.
+func (c ElementConstructor) Time(key string, time time.Time) *Element {
+	return c.DateTime(key, time.Unix()*1000)
 }
 
 // Null creates a null element with the given key.

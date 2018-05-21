@@ -1,3 +1,9 @@
+// Copyright (C) MongoDB, Inc. 2017-present.
+//
+// Licensed under the Apache License, Version 2.0 (the "License"); you may
+// not use this file except in compliance with the License. You may obtain
+// a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
+
 package command
 
 import (
@@ -43,9 +49,15 @@ func (a *Aggregate) Encode(desc description.SelectedServer) (wiremessage.WireMes
 			if t == 0 && a.HasDollarOut() {
 				continue
 			}
-			option.Option(cursor)
+			err := option.Option(cursor)
+			if err != nil {
+				return nil, err
+			}
 		default:
-			option.Option(command)
+			err := option.Option(command)
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 

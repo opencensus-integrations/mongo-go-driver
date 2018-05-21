@@ -17,9 +17,11 @@ import (
 	"github.com/mongodb/mongo-go-driver/core/options"
 	"github.com/mongodb/mongo-go-driver/core/readconcern"
 	"github.com/mongodb/mongo-go-driver/core/readpref"
+	"github.com/mongodb/mongo-go-driver/core/tag"
 	"github.com/mongodb/mongo-go-driver/core/topology"
 	"github.com/mongodb/mongo-go-driver/core/writeconcern"
-	"github.com/mongodb/mongo-go-driver/internal/trace"
+
+	"go.opencensus.io/trace"
 )
 
 const defaultLocalThreshold = 15 * time.Millisecond
@@ -33,6 +35,19 @@ type Client struct {
 	readPreference  *readpref.ReadPref
 	readConcern     *readconcern.ReadConcern
 	writeConcern    *writeconcern.WriteConcern
+}
+
+// Connect creates a new Client and then initializes it using the Connect method.
+func Connect(ctx context.Context, uri string, opts *ClientOptions) (*Client, error) {
+	c, err := NewClientWithOptions(uri, opts)
+	if err != nil {
+		return nil, err
+	}
+	err = c.Connect(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return c, nil
 }
 
 // NewClient creates a new client to connect to a cluster specified by the uri.
@@ -63,11 +78,28 @@ func NewClientFromConnString(cs connstring.ConnString) (*Client, error) {
 	return newClient(cs, nil)
 }
 
+// Connect initializes the Client by starting background monitoring goroutines.
+// This method must be called before a Client can be used.
+func (c *Client) Connect(ctx context.Context) error {
+	return c.topology.Connect(ctx)
+}
+
+// Disconnect closes sockets to the topology referenced by this Client. It will
+// shut down any monitoring goroutines, close the idle connection pool, and will
+// wait until all the in use connections have been returned to the connection
+// pool and closed before returning. If the context expires via cancellation,
+// deadline, or timeout before the in use connections have returned, the in use
+// connections will be closed, resulting in the failure of any in flight read
+// or write operations. If this method returns with no errors, all connections
+// associated with this Client have been closed.
+func (c *Client) Disconnect(ctx context.Context) error {
+	return c.topology.Disconnect(ctx)
+}
+
 func newClient(cs connstring.ConnString, opts *ClientOptions) (*Client, error) {
 	client := &Client{
 		connString:     cs,
 		localThreshold: defaultLocalThreshold,
-		readPreference: readpref.Primary(),
 	}
 
 	if opts != nil {
@@ -88,12 +120,20 @@ func newClient(cs connstring.ConnString, opts *ClientOptions) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	topo.Init()
-
 	client.topology = topo
+
 	client.readConcern = readConcernFromConnString(&client.connString)
 	client.writeConcern = writeConcernFromConnString(&client.connString)
+
+	rp, err := readPreferenceFromConnString(&client.connString)
+	if err != nil {
+		return nil, err
+	}
+	if rp != nil {
+		client.readPreference = rp
+	} else {
+		client.readPreference = readpref.Primary()
+	}
 
 	return client, nil
 }
@@ -145,20 +185,47 @@ func writeConcernFromConnString(cs *connstring.ConnString) *writeconcern.WriteCo
 	return wc
 }
 
+func readPreferenceFromConnString(cs *connstring.ConnString) (*readpref.ReadPref, error) {
+	var rp *readpref.ReadPref
+	var err error
+	options := make([]readpref.Option, 0, 1)
+
+	tagSets := tag.NewTagSetsFromMaps(cs.ReadPreferenceTagSets)
+	if len(tagSets) > 0 {
+		options = append(options, readpref.WithTagSets(tagSets...))
+	}
+
+	if cs.MaxStaleness != 0 {
+		options = append(options, readpref.WithMaxStaleness(cs.MaxStaleness))
+	}
+
+	if len(cs.ReadPreference) > 0 {
+		if rp == nil {
+			mode, _ := readpref.ModeFromString(cs.ReadPreference)
+			rp, err = readpref.New(mode, options...)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	return rp, nil
+}
+
 // Database returns a handle for a given database.
-func (client *Client) Database(name string) *Database {
-	return newDatabase(client, name)
+func (c *Client) Database(name string) *Database {
+	return newDatabase(c, name)
 }
 
 // ConnectionString returns the connection string of the cluster the client is connected to.
-func (client *Client) ConnectionString() string {
-	return client.connString.Original
+func (c *Client) ConnectionString() string {
+	return c.connString.Original
 }
 
-func (client *Client) listDatabasesHelper(ctx context.Context, filter interface{},
+func (c *Client) listDatabasesHelper(ctx context.Context, filter interface{},
 	nameOnly bool) (ListDatabasesResult, error) {
 
-	ctx, span := trace.SpanFromFunctionCaller(ctx)
+	ctx, span := trace.StartSpan(ctx, "mongo-go/mongo.(*Client).listDatabasesHelper")
 	defer span.End()
 
 	f, err := TransformDocument(filter)
@@ -176,7 +243,7 @@ func (client *Client) listDatabasesHelper(ctx context.Context, filter interface{
 
 	// The spec indicates that we should not run the listDatabase command on a secondary in a
 	// replica set.
-	res, err := dispatch.ListDatabases(ctx, cmd, client.topology, description.ReadPrefSelector(readpref.Primary()))
+	res, err := dispatch.ListDatabases(ctx, cmd, c.topology, description.ReadPrefSelector(readpref.Primary()))
 	if err != nil {
 		return ListDatabasesResult{}, err
 	}
@@ -184,19 +251,19 @@ func (client *Client) listDatabasesHelper(ctx context.Context, filter interface{
 }
 
 // ListDatabases returns a ListDatabasesResult.
-func (client *Client) ListDatabases(ctx context.Context, filter interface{}) (ListDatabasesResult, error) {
-	ctx, span := trace.SpanFromFunctionCaller(ctx)
+func (c *Client) ListDatabases(ctx context.Context, filter interface{}) (ListDatabasesResult, error) {
+	ctx, span := trace.StartSpan(ctx, "mongo-go/mongo.(*Client).ListDatabases")
 	defer span.End()
 
-	return client.listDatabasesHelper(ctx, filter, false)
+	return c.listDatabasesHelper(ctx, filter, false)
 }
 
 // ListDatabaseNames returns a slice containing the names of all of the databases on the server.
-func (client *Client) ListDatabaseNames(ctx context.Context, filter interface{}) ([]string, error) {
-	ctx, span := trace.SpanFromFunctionCaller(ctx)
+func (c *Client) ListDatabaseNames(ctx context.Context, filter interface{}) ([]string, error) {
+	ctx, span := trace.StartSpan(ctx, "mongo-go/mongo.(*Client).ListDatabaseNames")
 	defer span.End()
 
-	res, err := client.listDatabasesHelper(ctx, filter, true)
+	res, err := c.listDatabasesHelper(ctx, filter, true)
 	if err != nil {
 		return nil, err
 	}

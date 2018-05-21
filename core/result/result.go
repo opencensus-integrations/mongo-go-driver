@@ -1,3 +1,9 @@
+// Copyright (C) MongoDB, Inc. 2017-present.
+//
+// Licensed under the Apache License, Version 2.0 (the "License"); you may
+// not use this file except in compliance with the License. You may obtain
+// a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
+
 // Package result contains the results from various operations.
 package result
 
@@ -10,12 +16,27 @@ import (
 
 // Insert is a result from an Insert command.
 type Insert struct {
-	N int
+	N                 int
+	WriteErrors       []WriteError       `bson:"writeErrors"`
+	WriteConcernError *WriteConcernError `bson:"writeConcernError"`
 }
 
 // Delete is a result from a Delete command.
 type Delete struct {
-	N int
+	N                 int
+	WriteErrors       []WriteError       `bson:"writeErrors"`
+	WriteConcernError *WriteConcernError `bson:"writeConcernError"`
+}
+
+// Update is a result of an Update command.
+type Update struct {
+	MatchedCount  int64 `bson:"n"`
+	ModifiedCount int64 `bson:"nModified"`
+	Upserted      []struct {
+		ID interface{} `bson:"_id"`
+	} `bson:"upserted"`
+	WriteErrors       []WriteError       `bson:"writeErrors"`
+	WriteConcernError *WriteConcernError `bson:"writeConcernError"`
 }
 
 // Distinct is a result from a Distinct command.
@@ -32,8 +53,20 @@ type FindAndModify struct {
 	}
 }
 
-// Document is a result from a command that returns a single Document.
-type Document struct{}
+// WriteError is an error from a write operation that is not a write concern
+// error.
+type WriteError struct {
+	Index  int
+	Code   int
+	ErrMsg string
+}
+
+// WriteConcernError is an error related to a write concern.
+type WriteConcernError struct {
+	Code    int
+	ErrMsg  string
+	ErrInfo bson.Reader
+}
 
 // ListDatabases is the result from a listDatabases command.
 type ListDatabases struct {
@@ -43,15 +76,6 @@ type ListDatabases struct {
 		Empty      bool
 	}
 	TotalSize int64 `bson:"totalSize"`
-}
-
-// Update is a result of an Update command.
-type Update struct {
-	MatchedCount  int64 `bson:"n"`
-	ModifiedCount int64 `bson:"nModified"`
-	Upserted      []struct {
-		ID interface{} `bson:"_id"`
-	} `bson:"upserted"`
 }
 
 // IsMaster is a result of an IsMaster command.

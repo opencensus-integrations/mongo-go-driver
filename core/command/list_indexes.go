@@ -1,3 +1,9 @@
+// Copyright (C) MongoDB, Inc. 2017-present.
+//
+// Licensed under the Apache License, Version 2.0 (the "License"); you may
+// not use this file except in compliance with the License. You may obtain
+// a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
+
 package command
 
 import (
@@ -13,9 +19,8 @@ import (
 //
 // The listIndexes command lists the indexes for a namespace.
 type ListIndexes struct {
-	NS   Namespace
-	Opts []options.ListIndexesOptioner
-
+	NS     Namespace
+	Opts   []options.ListIndexesOptioner
 	result Cursor
 	err    error
 }
@@ -28,7 +33,10 @@ func (li *ListIndexes) Encode(desc description.SelectedServer) (wiremessage.Wire
 		if opt == nil {
 			continue
 		}
-		opt.Option(cmd)
+		err := opt.Option(cmd)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	return (&Command{DB: li.NS.DB, Command: cmd, isWrite: true}).Encode(desc)

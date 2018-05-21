@@ -1,3 +1,9 @@
+// Copyright (C) MongoDB, Inc. 2017-present.
+//
+// Licensed under the Apache License, Version 2.0 (the "License"); you may
+// not use this file except in compliance with the License. You may obtain
+// a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
+
 package command
 
 import (
@@ -5,6 +11,7 @@ import (
 
 	"github.com/mongodb/mongo-go-driver/bson"
 	"github.com/mongodb/mongo-go-driver/core/description"
+	"github.com/mongodb/mongo-go-driver/core/options"
 	"github.com/mongodb/mongo-go-driver/core/wiremessage"
 )
 
@@ -12,9 +19,9 @@ import (
 //
 // The dropIndexes command drops indexes for a namespace.
 type DropIndexes struct {
-	NS    Namespace
-	Index string
-
+	NS     Namespace
+	Index  string
+	Opts   []options.DropIndexesOptioner
 	result bson.Reader
 	err    error
 }
@@ -25,6 +32,16 @@ func (di *DropIndexes) Encode(desc description.SelectedServer) (wiremessage.Wire
 		bson.EC.String("dropIndexes", di.NS.Collection),
 		bson.EC.String("index", di.Index),
 	)
+
+	for _, opt := range di.Opts {
+		if opt == nil {
+			continue
+		}
+		err := opt.Option(cmd)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	return (&Command{DB: di.NS.DB, Command: cmd, isWrite: true}).Encode(desc)
 }

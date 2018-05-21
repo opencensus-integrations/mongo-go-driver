@@ -1,3 +1,9 @@
+// Copyright (C) MongoDB, Inc. 2017-present.
+//
+// Licensed under the Apache License, Version 2.0 (the "License"); you may
+// not use this file except in compliance with the License. You may obtain
+// a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
+
 package topology
 
 import (
@@ -86,7 +92,8 @@ func runSeedlistTest(t *testing.T, filename string, test *seedlistTestCase) {
 		// make a topology from the options
 		c, err := New(WithConnString(func(connstring.ConnString) connstring.ConnString { return cs }))
 		require.NoError(t, err)
-		c.Init()
+		err = c.Connect(context.Background())
+		require.NoError(t, err)
 
 		for _, host := range test.Hosts {
 			_, err := getServerByAddress(host, c)

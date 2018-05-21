@@ -80,6 +80,7 @@ func TestClientOptions_chainAll(t *testing.T) {
 		ReadPreference("secondary").
 		ReadPreferenceTagSets([]map[string]string{
 			{"nyc": "1"}}).
+		MaxStaleness(2 * time.Second).
 		ReplicaSet("foo").
 		ServerSelectionTimeout(time.Second).
 		Single(false).
@@ -106,6 +107,8 @@ func TestClientOptions_CustomDialer(t *testing.T) {
 	td := &testDialer{d: &net.Dialer{}}
 	opts := ClientOpt.Dialer(td)
 	client, err := newClient(testutil.ConnString(t), opts)
+	require.NoError(t, err)
+	err = client.Connect(context.Background())
 	require.NoError(t, err)
 	_, err = client.ListDatabases(context.Background(), nil)
 	require.NoError(t, err)

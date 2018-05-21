@@ -1,3 +1,9 @@
+// Copyright (C) MongoDB, Inc. 2017-present.
+//
+// Licensed under the Apache License, Version 2.0 (the "License"); you may
+// not use this file except in compliance with the License. You may obtain
+// a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
+
 package integration
 
 import (
@@ -113,7 +119,7 @@ func TestCommandAggregate(t *testing.T) {
 	t.Run("MaxTimeMS", func(t *testing.T) {
 		t.Skip("max time is flaky on the server")
 
-		server, err := topology.NewServer(addr.Addr(*host))
+		server, err := topology.ConnectServer(context.Background(), addr.Addr(*host))
 		noerr(t, err)
 		conn, err := server.Connection(context.Background())
 		noerr(t, err)
