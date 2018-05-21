@@ -12,7 +12,8 @@ import (
 
 	"github.com/mongodb/mongo-go-driver/core/description"
 	"github.com/mongodb/mongo-go-driver/core/wiremessage"
-	"github.com/mongodb/mongo-go-driver/internal/trace"
+
+	"go.opencensus.io/trace"
 )
 
 // PLAIN is the mechanism name for PLAIN.
@@ -37,13 +38,17 @@ type PlainAuthenticator struct {
 
 // Auth authenticates the connection.
 func (a *PlainAuthenticator) Auth(ctx context.Context, desc description.Server, rw wiremessage.ReadWriter) error {
-	ctx, span := trace.SpanFromFunctionCaller(ctx)
+	ctx, span := trace.StartSpan(ctx, "mongo-go/core/auth/(*PlainAuthenticator).Auth")
 	defer span.End()
 
-	return ConductSaslConversation(ctx, desc, rw, "$external", &plainSaslClient{
+	err := ConductSaslConversation(ctx, desc, rw, "$external", &plainSaslClient{
 		username: a.Username,
 		password: a.Password,
 	})
+	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
+	}
+	return err
 }
 
 type plainSaslClient struct {

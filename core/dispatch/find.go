@@ -13,7 +13,8 @@ import (
 	"github.com/mongodb/mongo-go-driver/core/description"
 	"github.com/mongodb/mongo-go-driver/core/readconcern"
 	"github.com/mongodb/mongo-go-driver/core/topology"
-	"github.com/mongodb/mongo-go-driver/internal/trace"
+
+	"go.opencensus.io/trace"
 )
 
 // Find handles the full cycle dispatch and execution of a find command against the provided
@@ -26,33 +27,43 @@ func Find(
 	rc *readconcern.ReadConcern,
 ) (command.Cursor, error) {
 
-	ctx, span := trace.SpanFromFunctionCaller(ctx)
+	ctx, span := trace.StartSpan(ctx, "mongo-go/core/dispatch.Find")
 	defer span.End()
 
+	span.Annotatef(nil, "Invoking topology.SelectServer")
 	ss, err := topo.SelectServer(ctx, selector)
+	span.Annotatef(nil, "Finished invoking topology.SelectServer")
 	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return nil, err
 	}
 
 	if rc != nil {
-		_, rSpan := trace.SpanWithName(ctx, "readConcernOption")
+		span.Annotatef(nil, "Creating readConcernOption")
 		opt, err := readConcernOption(rc)
-		rSpan.End()
+		span.Annotatef(nil, "Finished creating readConcernOption")
 		if err != nil {
+			span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 			return nil, err
 		}
 		cmd.Opts = append(cmd.Opts, opt)
 	}
 
 	desc := ss.Description()
-	_, cSpan := trace.SpanWithName(ctx, "ss.Connection")
+	span.Annotatef(nil, "Invoking ss.Connection")
 	conn, err := ss.Connection(ctx)
-	cSpan.End()
-
+	span.Annotatef(nil, "Finished invoking ss.Connection")
 	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return nil, err
 	}
 	defer conn.Close()
 
-	return cmd.RoundTrip(ctx, desc, ss, conn)
+	span.Annotatef(nil, "Invoking cmd.RoundTrip")
+	cur, err := cmd.RoundTrip(ctx, desc, ss, conn)
+	span.Annotatef(nil, "Finished invoking cmd.RoundTrip")
+	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
+	}
+	return cur, err
 }

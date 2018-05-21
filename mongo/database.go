@@ -16,7 +16,8 @@ import (
 	"github.com/mongodb/mongo-go-driver/core/readconcern"
 	"github.com/mongodb/mongo-go-driver/core/readpref"
 	"github.com/mongodb/mongo-go-driver/core/writeconcern"
-	"github.com/mongodb/mongo-go-driver/internal/trace"
+
+	"go.opencensus.io/trace"
 )
 
 // Database performs operations on a given database.
@@ -72,11 +73,15 @@ func (db *Database) RunCommand(ctx context.Context, runCommand interface{}) (bso
 		ctx = context.Background()
 	}
 
-	ctx, span := trace.SpanFromFunctionCaller(ctx)
+	ctx, span := trace.StartSpan(ctx, "mongo-go/mongo.(*Database).RunCommand")
 	defer span.End()
 
 	cmd := command.Command{DB: db.Name(), Command: runCommand}
-	return dispatch.Command(ctx, cmd, db.client.topology, db.writeSelector)
+	br, err := dispatch.Command(ctx, cmd, db.client.topology, db.writeSelector)
+	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
+	}
+	return br, err
 }
 
 // Drop drops this database from mongodb.

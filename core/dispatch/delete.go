@@ -15,7 +15,8 @@ import (
 	"github.com/mongodb/mongo-go-driver/core/result"
 	"github.com/mongodb/mongo-go-driver/core/topology"
 	"github.com/mongodb/mongo-go-driver/core/writeconcern"
-	"github.com/mongodb/mongo-go-driver/internal/trace"
+
+	"go.opencensus.io/trace"
 )
 
 // Delete handles the full cycle dispatch and execution of a delete command against the provided
@@ -28,17 +29,23 @@ func Delete(
 	wc *writeconcern.WriteConcern,
 ) (result.Delete, error) {
 
-	ctx, span := trace.SpanFromFunctionCaller(ctx)
+	ctx, span := trace.StartSpan(ctx, "mongo-go/core/dispatch.Delete")
 	defer span.End()
 
+	span.Annotatef(nil, "Invoking topology.SelectServer")
 	ss, err := topo.SelectServer(ctx, selector)
+	span.Annotatef(nil, "Finished invoking topology.SelectServer")
 	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return result.Delete{}, err
 	}
 
 	if wc != nil {
+		span.Annotatef(nil, "Creating writeConcernOption")
 		opt, err := writeConcernOption(wc)
+		span.Annotatef(nil, "Finished creating writeConcernOption")
 		if err != nil {
+			span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 			return result.Delete{}, err
 		}
 		cmd.Opts = append(cmd.Opts, opt)
@@ -58,8 +65,11 @@ func Delete(
 		break
 	}
 	desc := ss.Description()
+	span.Annotatef(nil, "Creating ss.Connection")
 	conn, err := ss.Connection(ctx)
+	span.Annotatef(nil, "Finished creating ss.Connection")
 	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return result.Delete{}, err
 	}
 
@@ -69,9 +79,16 @@ func Delete(
 			defer conn.Close()
 			_, _ = cmd.RoundTrip(ctx, desc, conn)
 		}()
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: "Unacknowledged write"})
 		return result.Delete{}, ErrUnacknowledgedWrite
 	}
 	defer conn.Close()
 
-	return cmd.RoundTrip(ctx, desc, conn)
+	span.Annotatef(nil, "Invoking cmd.RoundTrip")
+	di, err := cmd.RoundTrip(ctx, desc, conn)
+	span.Annotatef(nil, "Finished invoking cmd.RoundTrip")
+	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
+	}
+	return di, err
 }

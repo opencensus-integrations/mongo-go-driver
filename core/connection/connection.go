@@ -27,7 +27,8 @@ import (
 	"github.com/mongodb/mongo-go-driver/core/addr"
 	"github.com/mongodb/mongo-go-driver/core/description"
 	"github.com/mongodb/mongo-go-driver/core/wiremessage"
-	"github.com/mongodb/mongo-go-driver/internal/trace"
+
+	"go.opencensus.io/trace"
 )
 
 var globalClientConnectionID uint64
@@ -78,10 +79,17 @@ type HandshakerFunc func(context.Context, addr.Addr, wiremessage.ReadWriter) (de
 
 // Handshake implements the Handshaker interface.
 func (hf HandshakerFunc) Handshake(ctx context.Context, address addr.Addr, rw wiremessage.ReadWriter) (description.Server, error) {
-	ctx, span := trace.SpanFromFunctionCaller(ctx)
+	ctx, span := trace.StartSpan(ctx, "mongo-go/core/connection.(HandshakerFunc).Handshake")
 	defer span.End()
 
-	return hf(ctx, address, rw)
+	ds, err := hf(ctx, address, rw)
+	if err != nil {
+		span.SetStatus(trace.Status{
+			Code:    int32(trace.StatusCodeInternal),
+			Message: err.Error(),
+		})
+	}
+	return ds, err
 }
 
 type connection struct {
@@ -102,20 +110,32 @@ type connection struct {
 //
 // The server description returned is nil if there was no handshaker provided.
 func New(ctx context.Context, address addr.Addr, opts ...Option) (Connection, *description.Server, error) {
+	ctx, span := trace.StartSpan(ctx, "mongo-go/core/connection.New")
+	defer span.End()
+
+	span.Annotatef(nil, "Invoking newConfig")
 	cfg, err := newConfig(opts...)
+	span.Annotatef(nil, "Finished invoking newConfig")
 	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return nil, nil, err
 	}
 
+	span.Annotatef(nil, "Invoking Config.Dialer.DialContext")
 	nc, err := cfg.dialer.DialContext(ctx, address.Network(), address.String())
+	span.Annotatef(nil, "Finished invoking Config.Dialer.DialContext")
 	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return nil, nil, err
 	}
 
 	if cfg.tlsConfig != nil {
+		span.Annotatef(nil, "Configuring TLS")
 		tlsConfig := cfg.tlsConfig.Clone()
 		nc, err = configureTLS(ctx, nc, address, tlsConfig)
+		span.Annotatef(nil, "Finished configuring TLS")
 		if err != nil {
+			span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 			return nil, nil, err
 		}
 	}
@@ -143,8 +163,11 @@ func New(ctx context.Context, address addr.Addr, opts ...Option) (Connection, *d
 
 	var desc *description.Server
 	if cfg.handshaker != nil {
+		span.Annotatef(nil, "Invoking handshaker.Handshake")
 		d, err := cfg.handshaker.Handshake(ctx, c.addr, c)
+		span.Annotatef(nil, "Finished invoking handshaker.Handshake")
 		if err != nil {
+			span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 			return nil, nil, err
 		}
 		desc = &d

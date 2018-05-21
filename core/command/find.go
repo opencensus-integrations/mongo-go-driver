@@ -14,7 +14,8 @@ import (
 	"github.com/mongodb/mongo-go-driver/core/options"
 	"github.com/mongodb/mongo-go-driver/core/readpref"
 	"github.com/mongodb/mongo-go-driver/core/wiremessage"
-	"github.com/mongodb/mongo-go-driver/internal/trace"
+
+	"go.opencensus.io/trace"
 )
 
 // Find represents the find command.
@@ -109,22 +110,29 @@ func (f *Find) Err() error { return f.err }
 // RoundTrip handles the execution of this command using the provided wiremessage.ReadWriter.
 func (f *Find) RoundTrip(ctx context.Context, desc description.SelectedServer, cb CursorBuilder, rw wiremessage.ReadWriter) (Cursor, error) {
 	wm, err := f.Encode(desc)
-	ctx, span := trace.SpanFromFunctionCaller(ctx)
+	ctx, span := trace.StartSpan(ctx, "mongo-go/core/command.(*Find).RoundTrip")
 	defer span.End()
 
 	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return nil, err
 	}
 
 	err = rw.WriteWireMessage(ctx, wm)
 	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return nil, err
 	}
 	wm, err = rw.ReadWireMessage(ctx)
 	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return nil, err
 	}
-	_, dSpan := trace.SpanWithName(ctx, "Decode")
-	defer dSpan.End()
-	return f.Decode(desc, cb, wm).Result()
+	span.Annotatef(nil, "Invoking Decode")
+	cur, err := f.Decode(desc, cb, wm).Result()
+	span.Annotatef(nil, "Finished Decode")
+	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
+	}
+	return cur, err
 }

@@ -14,7 +14,8 @@ import (
 	"github.com/mongodb/mongo-go-driver/core/readconcern"
 	"github.com/mongodb/mongo-go-driver/core/result"
 	"github.com/mongodb/mongo-go-driver/core/topology"
-	"github.com/mongodb/mongo-go-driver/internal/trace"
+
+	"go.opencensus.io/trace"
 )
 
 // Distinct handles the full cycle dispatch and execution of a distinct command against the provided
@@ -27,28 +28,43 @@ func Distinct(
 	rc *readconcern.ReadConcern,
 ) (result.Distinct, error) {
 
-	ctx, span := trace.SpanFromFunctionCaller(ctx)
+	ctx, span := trace.StartSpan(ctx, "mongo-go/core/dispatch.Distinct")
 	defer span.End()
 
+	span.Annotatef(nil, "Invoking topology.SelectServer")
 	ss, err := topo.SelectServer(ctx, selector)
+	span.Annotatef(nil, "Finished invoking topology.SelectServer")
 	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return result.Distinct{}, err
 	}
 
 	if rc != nil {
+		span.Annotatef(nil, "Creating readConcernOption")
 		opt, err := readConcernOption(rc)
+		span.Annotatef(nil, "Finished creating readConcernOption")
 		if err != nil {
+			span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 			return result.Distinct{}, err
 		}
 		cmd.Opts = append(cmd.Opts, opt)
 	}
 
 	desc := ss.Description()
+	span.Annotatef(nil, "Invoking ss.Connection")
 	conn, err := ss.Connection(ctx)
+	span.Annotatef(nil, "Finished invoking ss.Connection")
 	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return result.Distinct{}, err
 	}
 	defer conn.Close()
 
-	return cmd.RoundTrip(ctx, desc, conn)
+	span.Annotatef(nil, "Invoking cmd.RoundTrip")
+	di, err := cmd.RoundTrip(ctx, desc, conn)
+	span.Annotatef(nil, "Finished invoking cmd.RoundTrip")
+	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
+	}
+	return di, err
 }

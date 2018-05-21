@@ -157,10 +157,6 @@ func (p *pool) Get(ctx context.Context) (Connection, *description.Server, error)
 	ctx, span := trace.StartSpan(ctx, "mongo-go-driver/core/connnection/(*pool).Get")
 	defer span.End()
 
-	p.Lock()
-	conns := p.conns
-	p.Unlock()
-
 	if atomic.LoadInt32(&p.connected) != connected {
 		return nil, nil, ErrPoolClosed
 	}

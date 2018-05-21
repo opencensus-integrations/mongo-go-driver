@@ -215,10 +215,11 @@ func (t *Topology) RequestImmediateCheck() {
 // server selection spec, and will time out after severSelectionTimeout or when the
 // parent context is done.
 func (t *Topology) SelectServer(ctx context.Context, ss description.ServerSelector) (*SelectedServer, error) {
-	ctx, span := trace.StartSpan(ctx, "mongo-go-driver/core/topology.(*Topology)")
+	ctx, span := trace.StartSpan(ctx, "mongo-go/core/topology.(*Topology).SelectServer")
 	defer span.End()
 
 	if atomic.LoadInt32(&t.connectionstate) != connected {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: "Closed topology"})
 		return nil, ErrTopologyClosed
 	}
 	var ssTimeoutCh <-chan time.Time
@@ -230,6 +231,7 @@ func (t *Topology) SelectServer(ctx context.Context, ss description.ServerSelect
 
 	sub, err := t.Subscribe()
 	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return nil, err
 	}
 	defer sub.Unsubscribe()
@@ -237,6 +239,7 @@ func (t *Topology) SelectServer(ctx context.Context, ss description.ServerSelect
 	for {
 		suitable, err := t.selectServer(ctx, sub.C, ss, ssTimeoutCh)
 		if err != nil {
+			span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 			return nil, err
 		}
 
@@ -244,6 +247,7 @@ func (t *Topology) SelectServer(ctx context.Context, ss description.ServerSelect
 		selectedS, err := t.findServer(selected)
 		switch {
 		case err != nil:
+			span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 			return nil, err
 		case selectedS != nil:
 			return selectedS, nil
@@ -277,15 +281,22 @@ func (t *Topology) findServer(selected description.Server) (*SelectedServer, err
 // selectServer is the core piece of server selection. It handles getting
 // topology descriptions and running sever selection on those descriptions.
 func (t *Topology) selectServer(ctx context.Context, subscriptionCh <-chan description.Topology, ss description.ServerSelector, timeoutCh <-chan time.Time) ([]description.Server, error) {
-	ctx, span := trace.SpanFromFunctionCaller(ctx)
+	ctx, span := trace.StartSpan(ctx, "mongo-go/core/topology.(*Topology")
 	defer span.End()
 
 	var current description.Topology
 	for {
 		select {
 		case <-ctx.Done():
+			span.SetStatus(trace.Status{
+				Code:    int32(trace.StatusCodeDeadlineExceeded),
+				Message: "Request timed out",
+			})
 			return nil, ctx.Err()
 		case <-timeoutCh:
+			span.SetStatus(trace.Status{
+				Code:    int32(trace.StatusCodeDeadlineExceeded),
+				Message: "Server selection timed out"})
 			return nil, ErrServerSelectionTimeout
 		case current = <-subscriptionCh:
 		}
@@ -299,6 +310,10 @@ func (t *Topology) selectServer(ctx context.Context, subscriptionCh <-chan descr
 
 		suitable, err := ss.SelectServer(current, allowed)
 		if err != nil {
+			span.SetStatus(trace.Status{
+				Code:    int32(trace.StatusCodeInternal),
+				Message: err.Error(),
+			})
 			return nil, err
 		}
 

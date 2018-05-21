@@ -13,7 +13,8 @@ import (
 	"github.com/mongodb/mongo-go-driver/core/command"
 	"github.com/mongodb/mongo-go-driver/core/description"
 	"github.com/mongodb/mongo-go-driver/core/wiremessage"
-	"github.com/mongodb/mongo-go-driver/internal/trace"
+
+	"go.opencensus.io/trace"
 )
 
 // SaslClient is the client piece of a sasl conversation.
@@ -32,11 +33,14 @@ type SaslClientCloser interface {
 // ConductSaslConversation handles running a sasl conversation with MongoDB.
 func ConductSaslConversation(ctx context.Context, desc description.Server, rw wiremessage.ReadWriter, db string, client SaslClient) error {
 
-	ctx, span := trace.SpanFromFunctionCaller(ctx)
+	ctx, span := trace.StartSpan(ctx, "mongo-go/core/auth.ConductSaslConversation")
 	defer span.End()
 
 	// Arbiters cannot be authenticated
 	if desc.Kind == description.RSArbiter {
+		span.Annotatef([]trace.Attribute{
+			trace.StringAttribute("arbiter_type", "RSA"),
+		}, "Arbiters cannot be authenticated")
 		return nil
 	}
 
@@ -50,6 +54,7 @@ func ConductSaslConversation(ctx context.Context, desc description.Server, rw wi
 
 	mech, payload, err := client.Start()
 	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return newError(err, mech)
 	}
 
@@ -72,13 +77,17 @@ func ConductSaslConversation(ctx context.Context, desc description.Server, rw wi
 	var saslResp saslResponse
 
 	ssdesc := description.SelectedServer{Server: desc}
+	span.Annotatef(nil, "Invoking saslStartCmd.RoundTrip")
 	rdr, err := saslStartCmd.RoundTrip(ctx, ssdesc, rw)
+	span.Annotatef(nil, "Finished invoking saslStartCmd.RoundTrip")
 	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return newError(err, mech)
 	}
 
 	err = bson.Unmarshal(rdr, &saslResp)
 	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return err
 	}
 
@@ -86,6 +95,7 @@ func ConductSaslConversation(ctx context.Context, desc description.Server, rw wi
 
 	for {
 		if saslResp.Code != 0 {
+			span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: "Invalid saslResponse"})
 			return newError(err, mech)
 		}
 
@@ -95,6 +105,7 @@ func ConductSaslConversation(ctx context.Context, desc description.Server, rw wi
 
 		payload, err = client.Next(saslResp.Payload)
 		if err != nil {
+			span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 			return newError(err, mech)
 		}
 
@@ -111,13 +122,17 @@ func ConductSaslConversation(ctx context.Context, desc description.Server, rw wi
 			),
 		}
 
+		span.Annotatef(nil, "Invoking saslContinueCmd.RoundTrip")
 		rdr, err = saslContinueCmd.RoundTrip(ctx, ssdesc, rw)
+		span.Annotatef(nil, "Finished invoking saslContinueCmd.RoundTrip")
 		if err != nil {
+			span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 			return newError(err, mech)
 		}
 
 		err = bson.Unmarshal(rdr, &saslResp)
 		if err != nil {
+			span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 			return err
 		}
 	}

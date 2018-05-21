@@ -13,7 +13,8 @@ import (
 	"github.com/mongodb/mongo-go-driver/core/command"
 	"github.com/mongodb/mongo-go-driver/core/description"
 	"github.com/mongodb/mongo-go-driver/core/topology"
-	"github.com/mongodb/mongo-go-driver/internal/trace"
+
+	"go.opencensus.io/trace"
 )
 
 // Command handles the full cycle dispatch and execution of a command against the provided
@@ -25,19 +26,25 @@ func Command(
 	selector description.ServerSelector,
 ) (bson.Reader, error) {
 
-	ctx, span := trace.SpanFromFunctionCaller(ctx)
+	ctx, span := trace.StartSpan(ctx, "mongo-go/core/dispatch.Command")
 	defer span.End()
 
 	ss, err := topo.SelectServer(ctx, selector)
 	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return nil, err
 	}
 
 	conn, err := ss.Connection(ctx)
 	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return nil, err
 	}
 	defer conn.Close()
 
-	return cmd.RoundTrip(ctx, ss.Description(), conn)
+	br, err := cmd.RoundTrip(ctx, ss.Description(), conn)
+	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
+	}
+	return br, err
 }

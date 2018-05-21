@@ -14,7 +14,8 @@ import (
 	"github.com/mongodb/mongo-go-driver/core/options"
 	"github.com/mongodb/mongo-go-driver/core/topology"
 	"github.com/mongodb/mongo-go-driver/core/writeconcern"
-	"github.com/mongodb/mongo-go-driver/internal/trace"
+
+	"go.opencensus.io/trace"
 )
 
 // Aggregate handles the full cycle dispatch and execution of an aggregate command against the provided
@@ -27,7 +28,7 @@ func Aggregate(
 	wc *writeconcern.WriteConcern,
 ) (command.Cursor, error) {
 
-	ctx, span := trace.SpanFromFunctionCaller(ctx)
+	ctx, span := trace.StartSpan(ctx, "mongo-go/core/dispatch.Aggregate")
 	defer span.End()
 
 	dollarOut := cmd.HasDollarOut()
@@ -37,13 +38,19 @@ func Aggregate(
 	acknowledged := true
 	switch dollarOut {
 	case true:
+		span.Annotatef(nil, "Invoking topology.SelectServer")
 		ss, err = topo.SelectServer(ctx, writeSelector)
+		span.Annotatef(nil, "Finished invoking topology.SelectServer")
 		if err != nil {
+			span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 			return nil, err
 		}
 		if wc != nil {
+			span.Annotatef(nil, "Invoking WriteConcern.MarshalBSONElement")
 			elem, err := wc.MarshalBSONElement()
+			span.Annotatef(nil, "Finished invoking WriteConcern.MarshalBSONElement")
 			if err != nil {
+				span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 				return nil, err
 			}
 
@@ -61,7 +68,9 @@ func Aggregate(
 		}
 
 	case false:
+		span.Annotatef(nil, "Invoking topology.SelectServer")
 		ss, err = topo.SelectServer(ctx, readSelector)
+		span.Annotatef(nil, "Finished invoking topology.SelectServer")
 		if err != nil {
 			return nil, err
 		}
@@ -70,6 +79,7 @@ func Aggregate(
 	desc := ss.Description()
 	conn, err := ss.Connection(ctx)
 	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return nil, err
 	}
 
@@ -83,5 +93,11 @@ func Aggregate(
 	}
 	defer conn.Close()
 
-	return cmd.RoundTrip(ctx, desc, ss, conn)
+	span.Annotatef(nil, "Invoking cmd.RoundTrip")
+	cur, err := cmd.RoundTrip(ctx, desc, ss, conn)
+	span.Annotatef(nil, "Finished invoking cmd.RoundTrip")
+	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
+	}
+	return cur, err
 }

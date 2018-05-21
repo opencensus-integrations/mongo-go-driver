@@ -36,12 +36,16 @@ type IndexModel struct {
 
 // List returns a cursor iterating over all the indexes in the collection.
 func (iv IndexView) List(ctx context.Context) (Cursor, error) {
-	ctx, span := trace.SpanFromFunctionCaller(ctx)
+	ctx, span := trace.StartSpan(ctx, "mongo-go/mongo.(IndexView).List")
 	defer span.End()
 
 	listCmd := command.ListIndexes{NS: iv.coll.namespace()}
 
-	return dispatch.ListIndexes(ctx, listCmd, iv.coll.client.topology, iv.coll.writeSelector)
+	cur, err := dispatch.ListIndexes(ctx, listCmd, iv.coll.client.topology, iv.coll.writeSelector)
+	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
+	}
+	return cur, err
 }
 
 // CreateOne creates a single index in the collection specified by the model.

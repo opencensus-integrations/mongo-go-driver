@@ -14,7 +14,8 @@ import (
 	"github.com/mongodb/mongo-go-driver/bson"
 	"github.com/mongodb/mongo-go-driver/core/command"
 	"github.com/mongodb/mongo-go-driver/core/options"
-	"github.com/mongodb/mongo-go-driver/internal/trace"
+
+	"go.opencensus.io/trace"
 )
 
 // ErrMissingResumeToken indicates that a change stream notification from the server did not
@@ -36,13 +37,14 @@ const errorCodeCursorNotFound int32 = 43
 func newChangeStream(ctx context.Context, coll *Collection, pipeline interface{},
 	opts ...options.ChangeStreamOptioner) (*changeStream, error) {
 
-	ctx, span := trace.SpanFromFunctionCaller(ctx)
+	ctx, span := trace.StartSpan(ctx, "mongo-go/mongo.newChangeStream")
 	defer span.End()
 
-	trace.AnnotateStrings(span, "New changes stream", nil)
-
+	span.Annotatef(nil, "Started aggregate pipeline transformation")
 	pipelineArr, err := transformAggregatePipeline(pipeline)
+	span.Annotatef(nil, "Finished aggregate pipeline transformation")
 	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return nil, err
 	}
 
@@ -60,9 +62,11 @@ func newChangeStream(ctx context.Context, coll *Collection, pipeline interface{}
 			bson.NewDocument(
 				bson.EC.SubDocument("$changeStream", changeStreamOptions))))
 
-	trace.AnnotateStrings(span, "Aggregation the collection", nil)
+	span.Annotatef(nil, "Starting the pipeline aggregation")
 	cursor, err := coll.Aggregate(ctx, pipelineArr)
+	span.Annotatef(nil, "Finished the pipeline aggregation")
 	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return nil, err
 	}
 
@@ -81,10 +85,10 @@ func (cs *changeStream) ID() int64 {
 }
 
 func (cs *changeStream) Next(ctx context.Context) bool {
-	ctx, span := trace.SpanFromFunctionCaller(ctx)
+	ctx, span := trace.StartSpan(ctx, "mongo-go/mongo.(*changeStream).Next")
 	defer span.End()
 
-	trace.AnnotateStrings(span, "Next", nil)
+	span.Annotatef(nil, "Invoking next")
 
 	if cs.cursor.Next(ctx) {
 		return true
@@ -123,17 +127,21 @@ func (cs *changeStream) Next(ctx context.Context) bool {
 		IDs: []int64{cs.ID()},
 	}
 
-	trace.AnnotateStrings(span, "Selecting the server in the topology", nil)
+	span.Annotatef(nil, "Selecting the server in the topology")
 	ss, err := cs.coll.client.topology.SelectServer(ctx, cs.coll.readSelector)
+	span.Annotatef(nil, "Finished selecting the server in the topology")
 	if err != nil {
 		cs.err = err
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return false
 	}
 
-	trace.AnnotateStrings(span, "Now retrieving the connection", nil)
+	span.Annotatef(nil, "Retrieving the connection")
 	conn, err := ss.Connection(ctx)
+	span.Annotatef(nil, "Finished retrieving the connection")
 	if err != nil {
 		cs.err = err
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return false
 	}
 	defer conn.Close()
@@ -161,10 +169,12 @@ func (cs *changeStream) Next(ctx context.Context) bool {
 		NS:       command.Namespace{DB: oldns.DB, Collection: oldns.Collection},
 		Pipeline: cs.pipeline,
 	}
-	trace.AnnotateStrings(span, "Now invoking aggregate command RoundTrip", nil)
+	span.Annotatef(nil, "Now invoking aggregate command RoundTrip")
 	cs.cursor, cs.err = aggCmd.RoundTrip(ctx, ss.Description(), ss, conn)
+	span.Annotatef(nil, "Finished invoking aggregate command RoundTrip")
 
 	if cs.err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: cs.err.Error()})
 		return false
 	}
 

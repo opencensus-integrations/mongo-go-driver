@@ -10,14 +10,14 @@ import (
 	"context"
 	"crypto/md5"
 	"fmt"
-
 	"io"
 
 	"github.com/mongodb/mongo-go-driver/bson"
 	"github.com/mongodb/mongo-go-driver/core/command"
 	"github.com/mongodb/mongo-go-driver/core/description"
 	"github.com/mongodb/mongo-go-driver/core/wiremessage"
-	"github.com/mongodb/mongo-go-driver/internal/trace"
+
+	"go.opencensus.io/trace"
 )
 
 // MONGODBCR is the mechanism name for MONGODB-CR.
@@ -41,11 +41,15 @@ type MongoDBCRAuthenticator struct {
 // Auth authenticates the connection.
 func (a *MongoDBCRAuthenticator) Auth(ctx context.Context, desc description.Server, rw wiremessage.ReadWriter) error {
 
-	ctx, span := trace.SpanFromFunctionCaller(ctx)
+	ctx, span := trace.StartSpan(ctx, "mongo-go/core/auth.(*MongoDBCRAuthenticator).Auth")
 	defer span.End()
 
 	// Arbiters cannot be authenticated
 	if desc.Kind == description.RSArbiter {
+		span.Annotatef([]trace.Attribute{
+			trace.StringAttribute("arbiter_type", "RSA"),
+		}, "Arbiters cannot be authenticated")
+		span.Annotatef(nil, "Arbiters cannot be authenticated")
 		return nil
 	}
 
@@ -56,8 +60,11 @@ func (a *MongoDBCRAuthenticator) Auth(ctx context.Context, desc description.Serv
 
 	cmd := command.Command{DB: db, Command: bson.NewDocument(bson.EC.Int32("getnonce", 1))}
 	ssdesc := description.SelectedServer{Server: desc}
+	span.Annotatef(nil, "Invoking cmd.RoundTrip")
 	rdr, err := cmd.RoundTrip(ctx, ssdesc, rw)
+	span.Annotatef(nil, "Finished invoking cmd.RoundTrip")
 	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return newError(err, MONGODBCR)
 	}
 
@@ -67,6 +74,7 @@ func (a *MongoDBCRAuthenticator) Auth(ctx context.Context, desc description.Serv
 
 	err = bson.Unmarshal(rdr, &getNonceResult)
 	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return err
 	}
 
@@ -79,8 +87,11 @@ func (a *MongoDBCRAuthenticator) Auth(ctx context.Context, desc description.Serv
 			bson.EC.String("key", a.createKey(getNonceResult.Nonce)),
 		),
 	}
+	span.Annotatef(nil, "Invoking cmd.RoundTrip")
 	_, err = cmd.RoundTrip(ctx, ssdesc, rw)
+	span.Annotatef(nil, "Finished invoking cmd.RoundTrip")
 	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return newError(err, MONGODBCR)
 	}
 

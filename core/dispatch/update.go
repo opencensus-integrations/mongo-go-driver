@@ -15,7 +15,8 @@ import (
 	"github.com/mongodb/mongo-go-driver/core/result"
 	"github.com/mongodb/mongo-go-driver/core/topology"
 	"github.com/mongodb/mongo-go-driver/core/writeconcern"
-	"github.com/mongodb/mongo-go-driver/internal/trace"
+
+	"go.opencensus.io/trace"
 )
 
 // Update handles the full cycle dispatch and execution of an update command against the provided
@@ -28,17 +29,19 @@ func Update(
 	wc *writeconcern.WriteConcern,
 ) (result.Update, error) {
 
-	ctx, span := trace.SpanFromFunctionCaller(ctx)
+	ctx, span := trace.StartSpan(ctx, "mongo-go/core/dispatch.Update")
 	defer span.End()
 
 	ss, err := topo.SelectServer(ctx, selector)
 	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return result.Update{}, err
 	}
 
 	if wc != nil {
 		opt, err := writeConcernOption(wc)
 		if err != nil {
+			span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 			return result.Update{}, err
 		}
 		cmd.Opts = append(cmd.Opts, opt)
@@ -58,8 +61,11 @@ func Update(
 		break
 	}
 	desc := ss.Description()
+	span.Annotatef(nil, "Starting ss.Connection")
 	conn, err := ss.Connection(ctx)
+	span.Annotatef(nil, "Finished invoking ss.Connection")
 	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return result.Update{}, err
 	}
 
@@ -73,5 +79,11 @@ func Update(
 	}
 	defer conn.Close()
 
-	return cmd.RoundTrip(ctx, desc, conn)
+	span.Annotatef(nil, "Invoking cmd.RoundTrip")
+	ures, err := cmd.RoundTrip(ctx, desc, conn)
+	span.Annotatef(nil, "Finished invoking cmd.RoundTrip")
+	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
+	}
+	return ures, err
 }

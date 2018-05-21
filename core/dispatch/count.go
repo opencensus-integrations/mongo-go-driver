@@ -13,7 +13,8 @@ import (
 	"github.com/mongodb/mongo-go-driver/core/description"
 	"github.com/mongodb/mongo-go-driver/core/readconcern"
 	"github.com/mongodb/mongo-go-driver/core/topology"
-	"github.com/mongodb/mongo-go-driver/internal/trace"
+
+	"go.opencensus.io/trace"
 )
 
 // Count handles the full cycle dispatch and execution of a count command against the provided
@@ -26,28 +27,41 @@ func Count(
 	rc *readconcern.ReadConcern,
 ) (int64, error) {
 
-	ctx, span := trace.SpanFromFunctionCaller(ctx)
+	ctx, span := trace.StartSpan(ctx, "mongo-go/core/dispatch.Count")
 	defer span.End()
 
+	span.Annotatef(nil, "Invoking topology.SelectServer")
 	ss, err := topo.SelectServer(ctx, selector)
+	span.Annotatef(nil, "Finished invoking topology.SelectServer")
 	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return 0, err
 	}
 
 	if rc != nil {
+		span.Annotatef(nil, "Creating readConcernOption")
 		opt, err := readConcernOption(rc)
+		span.Annotatef(nil, "Finished creating readConcernOption")
 		if err != nil {
+			span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 			return 0, err
 		}
 		cmd.Opts = append(cmd.Opts, opt)
 	}
 
 	desc := ss.Description()
+	span.Annotatef(nil, "Creating Connection")
 	conn, err := ss.Connection(ctx)
+	span.Annotatef(nil, "Finished creating Connection")
 	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return 0, err
 	}
 	defer conn.Close()
 
-	return cmd.RoundTrip(ctx, desc, conn)
+	cur, err := cmd.RoundTrip(ctx, desc, conn)
+	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
+	}
+	return cur, err
 }

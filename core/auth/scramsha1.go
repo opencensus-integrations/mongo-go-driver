@@ -22,7 +22,8 @@ import (
 
 	"github.com/mongodb/mongo-go-driver/core/description"
 	"github.com/mongodb/mongo-go-driver/core/wiremessage"
-	"github.com/mongodb/mongo-go-driver/internal/trace"
+
+	"go.opencensus.io/trace"
 )
 
 // SCRAMSHA1 is the mechanism name for SCRAM-SHA-1.
@@ -51,7 +52,7 @@ type ScramSHA1Authenticator struct {
 
 // Auth authenticates the connection.
 func (a *ScramSHA1Authenticator) Auth(ctx context.Context, desc description.Server, rw wiremessage.ReadWriter) error {
-	ctx, span := trace.SpanFromFunctionCaller(ctx)
+	ctx, span := trace.StartSpan(ctx, "mongo-go/core/auth.(*ScramSHA1Authenticator).Auth")
 	defer span.End()
 
 	client := &scramSaslClient{
@@ -63,6 +64,7 @@ func (a *ScramSHA1Authenticator) Auth(ctx context.Context, desc description.Serv
 
 	err := ConductSaslConversation(ctx, desc, rw, a.DB, client)
 	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return err
 	}
 

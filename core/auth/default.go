@@ -11,7 +11,8 @@ import (
 
 	"github.com/mongodb/mongo-go-driver/core/description"
 	"github.com/mongodb/mongo-go-driver/core/wiremessage"
-	"github.com/mongodb/mongo-go-driver/internal/trace"
+
+	"go.opencensus.io/trace"
 )
 
 func newDefaultAuthenticator(cred *Cred) (Authenticator, error) {
@@ -28,7 +29,7 @@ type DefaultAuthenticator struct {
 
 // Auth authenticates the connection.
 func (a *DefaultAuthenticator) Auth(ctx context.Context, desc description.Server, rw wiremessage.ReadWriter) error {
-	ctx, span := trace.SpanFromFunctionCaller(ctx)
+	ctx, span := trace.StartSpan(ctx, "mongo-go/core/auth.(*DefaultAuthenticator).Auth")
 	defer span.End()
 
 	var actual Authenticator
@@ -40,6 +41,7 @@ func (a *DefaultAuthenticator) Auth(ctx context.Context, desc description.Server
 	}
 
 	if err != nil {
+		span.SetStatus(trace.Status{Message: err.Error(), Code: int32(trace.StatusCodeInternal)})
 		return err
 	}
 

@@ -14,7 +14,8 @@ import (
 	"github.com/mongodb/mongo-go-driver/core/options"
 	"github.com/mongodb/mongo-go-driver/core/result"
 	"github.com/mongodb/mongo-go-driver/core/wiremessage"
-	"github.com/mongodb/mongo-go-driver/internal/trace"
+
+	"go.opencensus.io/trace"
 )
 
 // Insert represents the insert command.
@@ -80,21 +81,30 @@ func (i *Insert) Err() error { return i.err }
 
 // RoundTrip handles the execution of this command using the provided wiremessage.ReadWriter.
 func (i *Insert) RoundTrip(ctx context.Context, desc description.SelectedServer, rw wiremessage.ReadWriter) (result.Insert, error) {
-	ctx, span := trace.SpanFromFunctionCaller(ctx)
+	ctx, span := trace.StartSpan(ctx, "mongo-go/core/command.(*Insert).RoundTrip")
 	defer span.End()
 
+	span.Annotatef(nil, "Invoking Encode")
 	wm, err := i.Encode(desc)
+	span.Annotatef(nil, "Finished invoking Encode")
 	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return result.Insert{}, err
 	}
 
 	err = rw.WriteWireMessage(ctx, wm)
 	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return result.Insert{}, err
 	}
 	wm, err = rw.ReadWireMessage(ctx)
 	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return result.Insert{}, err
 	}
-	return i.Decode(desc, wm).Result()
+	ri, err := i.Decode(desc, wm).Result()
+	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
+	}
+	return ri, err
 }

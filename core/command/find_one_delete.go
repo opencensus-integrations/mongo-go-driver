@@ -14,7 +14,8 @@ import (
 	"github.com/mongodb/mongo-go-driver/core/options"
 	"github.com/mongodb/mongo-go-driver/core/result"
 	"github.com/mongodb/mongo-go-driver/core/wiremessage"
-	"github.com/mongodb/mongo-go-driver/internal/trace"
+
+	"go.opencensus.io/trace"
 )
 
 // FindOneAndDelete represents the findOneAndDelete operation.
@@ -80,28 +81,38 @@ func (f *FindOneAndDelete) Err() error { return f.err }
 
 // RoundTrip handles the execution of this command using the provided wiremessage.ReadWriter.
 func (f *FindOneAndDelete) RoundTrip(ctx context.Context, desc description.SelectedServer, rw wiremessage.ReadWriter) (result.FindAndModify, error) {
-	ctx, span := trace.SpanFromFunctionCaller(ctx)
+	ctx, span := trace.StartSpan(ctx, "mongo-go/core/command.(*FindOneAndDelete).RoundTrip")
 	defer span.End()
 
+	span.Annotatef(nil, "Invoking f.Encode")
 	wm, err := f.Encode(desc)
+	span.Annotatef(nil, "Finished f.Encode")
 	if err != nil {
+		span.SetStatus(trace.Status{Message: err.Error(), Code: int32(trace.StatusCodeInternal)})
 		return result.FindAndModify{}, err
 	}
 
-	_, wwSpan := trace.SpanWithName(ctx, "WriteWireMessage")
+	span.Annotatef(nil, "Invoking WriteWireMessage")
 	err = rw.WriteWireMessage(ctx, wm)
-	wwSpan.End()
+	span.Annotatef(nil, "Finished invoking WriteWireMessage")
 	if err != nil {
+		span.SetStatus(trace.Status{Message: err.Error(), Code: int32(trace.StatusCodeInternal)})
 		return result.FindAndModify{}, err
 	}
-	_, rwSpan := trace.SpanWithName(ctx, "ReadWireMessage")
+	span.Annotatef(nil, "Invoking ReadWireMessage")
 	wm, err = rw.ReadWireMessage(ctx)
-	rwSpan.End()
+	span.Annotatef(nil, "Finished invoking ReadWireMessage")
 	if err != nil {
+		span.SetStatus(trace.Status{Message: err.Error(), Code: int32(trace.StatusCodeInternal)})
 		return result.FindAndModify{}, err
 	}
-	_, dcSpan := trace.SpanWithName(ctx, "Decode")
-	defer dcSpan.End()
 
-	return f.Decode(desc, wm).Result()
+	span.Annotatef(nil, "Invoking f.Decode")
+	rfRes, err := f.Decode(desc, wm).Result()
+	span.Annotatef(nil, "Finished invoking f.Decode")
+	if err != nil {
+		span.SetStatus(trace.Status{Message: err.Error(), Code: int32(trace.StatusCodeInternal)})
+	}
+
+	return rfRes, err
 }

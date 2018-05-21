@@ -19,7 +19,8 @@ import (
 	"github.com/mongodb/mongo-go-driver/core/readconcern"
 	"github.com/mongodb/mongo-go-driver/core/readpref"
 	"github.com/mongodb/mongo-go-driver/core/writeconcern"
-	"github.com/mongodb/mongo-go-driver/internal/trace"
+
+	"go.opencensus.io/trace"
 )
 
 // Collection performs operations on a given collection.
@@ -75,18 +76,22 @@ func (coll *Collection) InsertOne(ctx context.Context, document interface{},
 		ctx = context.Background()
 	}
 
-	ctx, span := trace.SpanFromFunctionCaller(ctx)
+	ctx, span := trace.StartSpan(ctx, "mongo-go/mongo/(*Collection).InsertOne")
 	defer span.End()
 
-	trace.AnnotateStrings(span, "TransformDocument", nil)
+	span.Annotatef(nil, "Starting TransformDocument")
 	doc, err := TransformDocument(document)
+	span.Annotatef(nil, "Finished TransformDocument")
 	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return nil, err
 	}
 
-	trace.AnnotateStrings(span, "EnsureID", nil)
+	span.Annotatef(nil, "Starting EnsureID", nil)
 	insertedID, err := ensureID(doc)
+	span.Annotatef(nil, "Finished EnsureID", nil)
 	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return nil, err
 	}
 
@@ -104,6 +109,9 @@ func (coll *Collection) InsertOne(ctx context.Context, document interface{},
 
 	res, err := dispatch.Insert(ctx, cmd, coll.client.topology, coll.writeSelector, coll.writeConcern)
 	rr, err := processWriteError(res.WriteConcernError, res.WriteErrors, err)
+	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
+	}
 	if rr&rrOne == 0 {
 		return nil, err
 	}
@@ -127,7 +135,7 @@ func (coll *Collection) InsertMany(ctx context.Context, documents []interface{},
 		ctx = context.Background()
 	}
 
-	ctx, span := trace.SpanFromFunctionCaller(ctx)
+	ctx, span := trace.StartSpan(ctx, "mongo-go/mongo.(*Collection).InsertMany")
 	defer span.End()
 
 	result := make([]interface{}, len(documents))
@@ -136,10 +144,18 @@ func (coll *Collection) InsertMany(ctx context.Context, documents []interface{},
 	for i, doc := range documents {
 		bdoc, err := TransformDocument(doc)
 		if err != nil {
+			span.Annotatef([]trace.Attribute{
+				trace.Int64Attribute("i", int64(i)),
+			}, "TransformDocument error")
+			span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 			return nil, err
 		}
 		insertedID, err := ensureID(bdoc)
 		if err != nil {
+			span.Annotatef([]trace.Attribute{
+				trace.Int64Attribute("i", int64(i)),
+			}, "ensureID error")
+			span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 			return nil, err
 		}
 
@@ -163,15 +179,26 @@ func (coll *Collection) InsertMany(ctx context.Context, documents []interface{},
 	switch err {
 	case nil:
 	case dispatch.ErrUnacknowledgedWrite:
+		span.SetStatus(trace.Status{
+			Code:    int32(trace.StatusCodeDataLoss),
+			Message: "Unacknowleged write",
+		})
+		// TODO:(@odeke-em) Add stats for unacknowledgedWrites
 		return &InsertManyResult{InsertedIDs: result}, ErrUnacknowledgedWrite
+
 	default:
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return nil, err
 	}
+
 	if len(res.WriteErrors) > 0 || res.WriteConcernError != nil {
 		err = BulkWriteError{
 			WriteErrors:       writeErrorsFromResult(res.WriteErrors),
 			WriteConcernError: convertWriteConcernError(res.WriteConcernError),
 		}
+	}
+	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 	}
 	return &InsertManyResult{InsertedIDs: result}, err
 }
@@ -189,11 +216,12 @@ func (coll *Collection) DeleteOne(ctx context.Context, filter interface{},
 		ctx = context.Background()
 	}
 
-	ctx, span := trace.SpanFromFunctionCaller(ctx)
+	ctx, span := trace.StartSpan(ctx, "mongo-go/mongo.(*Collection).DeleteOne")
 	defer span.End()
 
 	f, err := TransformDocument(filter)
 	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return nil, err
 	}
 	deleteDocs := []*bson.Document{
@@ -211,6 +239,9 @@ func (coll *Collection) DeleteOne(ctx context.Context, filter interface{},
 
 	res, err := dispatch.Delete(ctx, cmd, coll.client.topology, coll.writeSelector, coll.writeConcern)
 	rr, err := processWriteError(res.WriteConcernError, res.WriteErrors, err)
+	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
+	}
 	if rr&rrOne == 0 {
 		return nil, err
 	}
@@ -231,11 +262,12 @@ func (coll *Collection) DeleteMany(ctx context.Context, filter interface{},
 		ctx = context.Background()
 	}
 
-	ctx, span := trace.SpanFromFunctionCaller(ctx)
+	ctx, span := trace.StartSpan(ctx, "mongo-go/mongo.(*Collection).DeleteMany")
 	defer span.End()
 
 	f, err := TransformDocument(filter)
 	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return nil, err
 	}
 	deleteDocs := []*bson.Document{bson.NewDocument(bson.EC.SubDocument("q", f), bson.EC.Int32("limit", 0))}
@@ -249,6 +281,9 @@ func (coll *Collection) DeleteMany(ctx context.Context, filter interface{},
 
 	res, err := dispatch.Delete(ctx, cmd, coll.client.topology, coll.writeSelector, coll.writeConcern)
 	rr, err := processWriteError(res.WriteConcernError, res.WriteErrors, err)
+	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
+	}
 	if rr&rrMany == 0 {
 		return nil, err
 	}
@@ -262,7 +297,7 @@ func (coll *Collection) updateOrReplaceOne(ctx context.Context, filter,
 		ctx = context.Background()
 	}
 
-	ctx, span := trace.SpanFromFunctionCaller(ctx)
+	ctx, span := trace.StartSpan(ctx, "mongo-go/mongo.(*Collection).updateOrReplaceOne")
 	defer span.End()
 
 	updateDocs := []*bson.Document{
@@ -282,6 +317,7 @@ func (coll *Collection) updateOrReplaceOne(ctx context.Context, filter,
 
 	r, err := dispatch.Update(ctx, cmd, coll.client.topology, coll.writeSelector, coll.writeConcern)
 	if err != nil && err != dispatch.ErrUnacknowledgedWrite {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return nil, err
 	}
 	res := &UpdateResult{
@@ -294,6 +330,9 @@ func (coll *Collection) updateOrReplaceOne(ctx context.Context, filter,
 	}
 
 	rr, err := processWriteError(r.WriteConcernError, r.WriteErrors, err)
+	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
+	}
 	if rr&rrOne == 0 {
 		return nil, err
 	}
@@ -313,24 +352,31 @@ func (coll *Collection) UpdateOne(ctx context.Context, filter interface{}, updat
 		ctx = context.Background()
 	}
 
-	ctx, span := trace.SpanFromFunctionCaller(ctx)
+	ctx, span := trace.StartSpan(ctx, "mongo-go/mongo.(*Collection).UpdateOne")
 	defer span.End()
 
 	f, err := TransformDocument(filter)
 	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return nil, err
 	}
 
 	u, err := TransformDocument(update)
 	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return nil, err
 	}
 
 	if err := ensureDollarKey(u); err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInvalidArgument), Message: err.Error()})
 		return nil, err
 	}
 
-	return coll.updateOrReplaceOne(ctx, f, u, options...)
+	ures, err := coll.updateOrReplaceOne(ctx, f, u, options...)
+	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
+	}
+	return ures, err
 }
 
 // UpdateMany updates multiple documents in the collection. A user can supply
@@ -346,20 +392,23 @@ func (coll *Collection) UpdateMany(ctx context.Context, filter interface{}, upda
 		ctx = context.Background()
 	}
 
-	ctx, span := trace.SpanFromFunctionCaller(ctx)
+	ctx, span := trace.StartSpan(ctx, "mongo-go/mongo.(*Collection).UpdateMany")
 	defer span.End()
 
 	f, err := TransformDocument(filter)
 	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return nil, err
 	}
 
 	u, err := TransformDocument(update)
 	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return nil, err
 	}
 
 	if err = ensureDollarKey(u); err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return nil, err
 	}
 
@@ -380,6 +429,7 @@ func (coll *Collection) UpdateMany(ctx context.Context, filter interface{}, upda
 
 	r, err := dispatch.Update(ctx, cmd, coll.client.topology, coll.writeSelector, coll.writeConcern)
 	if err != nil && err != dispatch.ErrUnacknowledgedWrite {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return nil, err
 	}
 	res := &UpdateResult{
@@ -393,6 +443,9 @@ func (coll *Collection) UpdateMany(ctx context.Context, filter interface{}, upda
 	}
 
 	rr, err := processWriteError(r.WriteConcernError, r.WriteErrors, err)
+	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
+	}
 	if rr&rrMany == 0 {
 		return nil, err
 	}
@@ -412,20 +465,26 @@ func (coll *Collection) ReplaceOne(ctx context.Context, filter interface{},
 		ctx = context.Background()
 	}
 
-	ctx, span := trace.SpanFromFunctionCaller(ctx)
+	ctx, span := trace.StartSpan(ctx, "mongo-go/mongo.(*Collection).ReplaceOne")
 	defer span.End()
 
 	f, err := TransformDocument(filter)
 	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return nil, err
 	}
 
 	r, err := TransformDocument(replacement)
 	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return nil, err
 	}
 
 	if elem, ok := r.ElementAtOK(0); ok && strings.HasPrefix(elem.Key(), "$") {
+		span.SetStatus(trace.Status{
+			Code:    int32(trace.StatusCodeInvalidArgument),
+			Message: "Cannot contain keys beginning with '$'",
+		})
 		return nil, errors.New("replacement document cannot contains keys beginning with '$")
 	}
 
@@ -434,7 +493,11 @@ func (coll *Collection) ReplaceOne(ctx context.Context, filter interface{},
 		updateOptions = append(updateOptions, opt)
 	}
 
-	return coll.updateOrReplaceOne(ctx, f, r, updateOptions...)
+	ures, err := coll.updateOrReplaceOne(ctx, f, r, updateOptions...)
+	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
+	}
+	return ures, err
 }
 
 // Aggregate runs an aggregation framework pipeline. A user can supply a custom context to
@@ -452,11 +515,12 @@ func (coll *Collection) Aggregate(ctx context.Context, pipeline interface{},
 		ctx = context.Background()
 	}
 
-	ctx, span := trace.SpanFromFunctionCaller(ctx)
+	ctx, span := trace.StartSpan(ctx, "mongo-go/mongo.(*Collection).Aggregate")
 	defer span.End()
 
 	pipelineArr, err := transformAggregatePipeline(pipeline)
 	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return nil, err
 	}
 
@@ -467,7 +531,11 @@ func (coll *Collection) Aggregate(ctx context.Context, pipeline interface{},
 		Opts:     opts,
 		ReadPref: coll.readPreference,
 	}
-	return dispatch.Aggregate(ctx, cmd, coll.client.topology, coll.readSelector, coll.writeSelector, coll.writeConcern)
+	cur, err := dispatch.Aggregate(ctx, cmd, coll.client.topology, coll.readSelector, coll.writeSelector, coll.writeConcern)
+	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
+	}
+	return cur, err
 }
 
 // Count gets the number of documents matching the filter. A user can supply a
@@ -483,11 +551,12 @@ func (coll *Collection) Count(ctx context.Context, filter interface{},
 		ctx = context.Background()
 	}
 
-	ctx, span := trace.SpanFromFunctionCaller(ctx)
+	ctx, span := trace.StartSpan(ctx, "mongo-go/mongo.(*Collection).Count")
 	defer span.End()
 
 	f, err := TransformDocument(filter)
 	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return 0, err
 	}
 
@@ -498,7 +567,11 @@ func (coll *Collection) Count(ctx context.Context, filter interface{},
 		Opts:     opts,
 		ReadPref: coll.readPreference,
 	}
-	return dispatch.Count(ctx, cmd, coll.client.topology, coll.readSelector, coll.readConcern)
+	count, err := dispatch.Count(ctx, cmd, coll.client.topology, coll.readSelector, coll.readConcern)
+	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
+	}
+	return count, err
 }
 
 // Distinct finds the distinct values for a specified field across a single
@@ -515,14 +588,17 @@ func (coll *Collection) Distinct(ctx context.Context, fieldName string, filter i
 		ctx = context.Background()
 	}
 
-	ctx, span := trace.SpanFromFunctionCaller(ctx)
+	ctx, span := trace.StartSpan(ctx, "mongo-go/mongo.(*Collection).Distinct")
 	defer span.End()
 
 	var f *bson.Document
 	var err error
 	if filter != nil {
+		span.Annotatef(nil, "Invoking TransformDocument with filter")
 		f, err = TransformDocument(filter)
+		span.Annotatef(nil, "Finished TransformDocument with filter")
 		if err != nil {
+			span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 			return nil, err
 		}
 	}
@@ -537,6 +613,7 @@ func (coll *Collection) Distinct(ctx context.Context, fieldName string, filter i
 	}
 	res, err := dispatch.Distinct(ctx, cmd, coll.client.topology, coll.readSelector, coll.readConcern)
 	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return nil, err
 	}
 
@@ -556,14 +633,17 @@ func (coll *Collection) Find(ctx context.Context, filter interface{},
 		ctx = context.Background()
 	}
 
-	ctx, span := trace.SpanFromFunctionCaller(ctx)
+	ctx, span := trace.StartSpan(ctx, "mongo-go/mongo.(*Collection).Find")
 	defer span.End()
 
 	var f *bson.Document
 	var err error
 	if filter != nil {
+		span.Annotatef(nil, "Invoking TransformDocument with filter")
 		f, err = TransformDocument(filter)
+		span.Annotatef(nil, "Finished TransformDocument with filter")
 		if err != nil {
+			span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 			return nil, err
 		}
 	}
@@ -575,7 +655,11 @@ func (coll *Collection) Find(ctx context.Context, filter interface{},
 		Opts:     opts,
 		ReadPref: coll.readPreference,
 	}
-	return dispatch.Find(ctx, cmd, coll.client.topology, coll.readSelector, coll.readConcern)
+	cur, err := dispatch.Find(ctx, cmd, coll.client.topology, coll.readSelector, coll.readConcern)
+	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
+	}
+	return cur, err
 }
 
 // FindOne returns up to one document that matches the model. A user can
@@ -592,7 +676,7 @@ func (coll *Collection) FindOne(ctx context.Context, filter interface{},
 		ctx = context.Background()
 	}
 
-	ctx, span := trace.SpanFromFunctionCaller(ctx)
+	ctx, span := trace.StartSpan(ctx, "mongo-go/mongo.(*Collection).FindOne")
 	defer span.End()
 
 	findOpts := make([]options.FindOptioner, 0, len(opts))
@@ -605,8 +689,11 @@ func (coll *Collection) FindOne(ctx context.Context, filter interface{},
 	var f *bson.Document
 	var err error
 	if filter != nil {
+		span.Annotatef(nil, "Invoking TransformDocument with filter")
 		f, err = TransformDocument(filter)
+		span.Annotatef(nil, "Finished TransformDocument with filter")
 		if err != nil {
+			span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 			return &DocumentResult{err: err}
 		}
 	}
@@ -620,6 +707,7 @@ func (coll *Collection) FindOne(ctx context.Context, filter interface{},
 	}
 	cursor, err := dispatch.Find(ctx, cmd, coll.client.topology, coll.readSelector, coll.readConcern)
 	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return &DocumentResult{err: err}
 	}
 
@@ -642,14 +730,17 @@ func (coll *Collection) FindOneAndDelete(ctx context.Context, filter interface{}
 		ctx = context.Background()
 	}
 
-	ctx, span := trace.SpanFromFunctionCaller(ctx)
+	ctx, span := trace.StartSpan(ctx, "mongo-go/mongo.(*Collection).FindOneAndDelete")
 	defer span.End()
 
 	var f *bson.Document
 	var err error
 	if filter != nil {
+		span.Annotatef(nil, "Invoking TransformDocument with filter")
 		f, err = TransformDocument(filter)
+		span.Annotatef(nil, "Finished TransformDocument with filter")
 		if err != nil {
+			span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 			return &DocumentResult{err: err}
 		}
 	}
@@ -662,6 +753,7 @@ func (coll *Collection) FindOneAndDelete(ctx context.Context, filter interface{}
 	}
 	res, err := dispatch.FindOneAndDelete(ctx, cmd, coll.client.topology, coll.writeSelector, coll.writeConcern)
 	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return &DocumentResult{err: err}
 	}
 
@@ -684,20 +776,27 @@ func (coll *Collection) FindOneAndReplace(ctx context.Context, filter interface{
 		ctx = context.Background()
 	}
 
-	ctx, span := trace.SpanFromFunctionCaller(ctx)
+	ctx, span := trace.StartSpan(ctx, "mongo-go/mongo.(*Collection).FindOneAndReplace")
 	defer span.End()
 
+	span.Annotatef(nil, "Invoking TransformDocument with filter")
 	f, err := TransformDocument(filter)
+	span.Annotatef(nil, "Finished TransformDocument with filter")
 	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return &DocumentResult{err: err}
 	}
 
+	span.Annotatef(nil, "Invoking TransformDocument with replacement")
 	r, err := TransformDocument(replacement)
+	span.Annotatef(nil, "Finished TransformDocument with replacement")
 	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return &DocumentResult{err: err}
 	}
 
 	if elem, ok := r.ElementAtOK(0); ok && strings.HasPrefix(elem.Key(), "$") {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInvalidArgument), Message: "Cannot contain keys beginning with '$'"})
 		return &DocumentResult{err: errors.New("replacement document cannot contains keys beginning with '$")}
 	}
 
@@ -732,16 +831,22 @@ func (coll *Collection) FindOneAndUpdate(ctx context.Context, filter interface{}
 		ctx = context.Background()
 	}
 
-	ctx, span := trace.SpanFromFunctionCaller(ctx)
+	ctx, span := trace.StartSpan(ctx, "mongo-go/mongo.(*Collection).FindOneAndUpdate")
 	defer span.End()
 
+	span.Annotatef(nil, "Invoking TransformDocument with filter")
 	f, err := TransformDocument(filter)
+	span.Annotatef(nil, "Finished TransformDocument with filter")
 	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return &DocumentResult{err: err}
 	}
 
+	span.Annotatef(nil, "Invoking TransformDocument with update")
 	u, err := TransformDocument(update)
+	span.Annotatef(nil, "Finished TransformDocument with update")
 	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return &DocumentResult{err: err}
 	}
 
@@ -758,6 +863,7 @@ func (coll *Collection) FindOneAndUpdate(ctx context.Context, filter interface{}
 	}
 	res, err := dispatch.FindOneAndUpdate(ctx, cmd, coll.client.topology, coll.writeSelector, coll.writeConcern)
 	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return &DocumentResult{err: err}
 	}
 
@@ -769,10 +875,14 @@ func (coll *Collection) FindOneAndUpdate(ctx context.Context, filter interface{}
 // supports resumability in the case of some errors.
 func (coll *Collection) Watch(ctx context.Context, pipeline interface{},
 	opts ...options.ChangeStreamOptioner) (Cursor, error) {
-	ctx, span := trace.SpanFromFunctionCaller(ctx)
+	ctx, span := trace.StartSpan(ctx, "mongo-go/mongo.(*Collection)")
 	defer span.End()
 
-	return newChangeStream(ctx, coll, pipeline, opts...)
+	cur, err := newChangeStream(ctx, coll, pipeline, opts...)
+	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
+	}
+	return cur, err
 }
 
 // Indexes returns the index view for this collection.
@@ -786,12 +896,16 @@ func (coll *Collection) Drop(ctx context.Context) error {
 		ctx = context.Background()
 	}
 
+	ctx, span := trace.StartSpan(ctx, "mongo-go/mongo.(*Collection).Drop")
+	defer span.End()
+
 	cmd := command.DropCollection{
 		DB:         coll.db.name,
 		Collection: coll.name,
 	}
 	_, err := dispatch.DropCollection(ctx, cmd, coll.client.topology, coll.writeSelector)
 	if err != nil && !command.IsNotFound(err) {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return err
 	}
 	return nil

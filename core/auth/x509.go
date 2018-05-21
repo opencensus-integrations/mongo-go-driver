@@ -13,7 +13,8 @@ import (
 	"github.com/mongodb/mongo-go-driver/core/command"
 	"github.com/mongodb/mongo-go-driver/core/description"
 	"github.com/mongodb/mongo-go-driver/core/wiremessage"
-	"github.com/mongodb/mongo-go-driver/internal/trace"
+
+	"go.opencensus.io/trace"
 )
 
 // MongoDBX509 is the mechanism name for MongoDBX509.
@@ -30,7 +31,7 @@ type MongoDBX509Authenticator struct {
 
 // Auth implements the Authenticator interface.
 func (a *MongoDBX509Authenticator) Auth(ctx context.Context, desc description.Server, rw wiremessage.ReadWriter) error {
-	ctx, span := trace.SpanFromFunctionCaller(ctx)
+	ctx, span := trace.StartSpan(ctx, "mongo-go/core/auth.(*MongoDBX509Authenticator")
 	defer span.End()
 
 	authRequestDoc := bson.NewDocument(
@@ -44,8 +45,14 @@ func (a *MongoDBX509Authenticator) Auth(ctx context.Context, desc description.Se
 
 	authCmd := command.Command{DB: "$external", Command: authRequestDoc}
 	ssdesc := description.SelectedServer{Server: desc}
+	span.Annotatef(nil, "Invoking authCmd.RoundTrip")
 	_, err := authCmd.RoundTrip(ctx, ssdesc, rw)
+	span.Annotatef(nil, "Finished invoking authCmd.RoundTrip")
 	if err != nil {
+		span.SetStatus(trace.Status{
+			Code:    int32(trace.StatusCodeInternal),
+			Message: err.Error(),
+		})
 		return err
 	}
 

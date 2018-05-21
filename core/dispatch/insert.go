@@ -15,7 +15,8 @@ import (
 	"github.com/mongodb/mongo-go-driver/core/result"
 	"github.com/mongodb/mongo-go-driver/core/topology"
 	"github.com/mongodb/mongo-go-driver/core/writeconcern"
-	"github.com/mongodb/mongo-go-driver/internal/trace"
+
+	"go.opencensus.io/trace"
 )
 
 // Insert handles the full cycle dispatch and execution of an insert command against the provided
@@ -28,11 +29,14 @@ func Insert(
 	wc *writeconcern.WriteConcern,
 ) (result.Insert, error) {
 
-	ctx, span := trace.SpanFromFunctionCaller(ctx)
+	ctx, span := trace.StartSpan(ctx, "mongo-go/core/dispatch.Insert")
 	defer span.End()
 
+	span.Annotatef(nil, "Invoking topology.SelectServer")
 	ss, err := topo.SelectServer(ctx, selector)
+	span.Annotatef(nil, "Finished invoking topology.SelectServer")
 	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return result.Insert{}, err
 	}
 
@@ -69,9 +73,16 @@ func Insert(
 			defer conn.Close()
 			_, _ = cmd.RoundTrip(ctx, desc, conn)
 		}()
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: "Unacknowledged write"})
 		return result.Insert{}, ErrUnacknowledgedWrite
 	}
 	defer conn.Close()
 
-	return cmd.RoundTrip(ctx, desc, conn)
+	span.Annotatef(nil, "Invoking command.RoundTrip")
+	ri, err := cmd.RoundTrip(ctx, desc, conn)
+	span.Annotatef(nil, "Finished invoking command.RoundTrip")
+	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
+	}
+	return ri, err
 }

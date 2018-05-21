@@ -15,7 +15,8 @@ import (
 	"github.com/mongodb/mongo-go-driver/core/result"
 	"github.com/mongodb/mongo-go-driver/core/topology"
 	"github.com/mongodb/mongo-go-driver/core/writeconcern"
-	"github.com/mongodb/mongo-go-driver/internal/trace"
+
+	"go.opencensus.io/trace"
 )
 
 // FindOneAndDelete handles the full cycle dispatch and execution of a FindOneAndDelete command against the provided
@@ -28,19 +29,23 @@ func FindOneAndDelete(
 	wc *writeconcern.WriteConcern,
 ) (result.FindAndModify, error) {
 
-	ctx, span := trace.SpanFromFunctionCaller(ctx)
+	ctx, span := trace.StartSpan(ctx, "mongo-go/core/dispatch.FindOneAndDelete")
 	defer span.End()
 
+	span.Annotatef(nil, "Invoking topology.SelectServer")
 	ss, err := topo.SelectServer(ctx, selector)
+	span.Annotatef(nil, "Finished invoking topology.SelectServer")
 	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return result.FindAndModify{}, err
 	}
 
 	if wc != nil {
-		_, wcSpan := trace.SpanWithName(ctx, "writeConcernOption")
+		span.Annotatef(nil, "Creating writeConcernOption")
 		opt, err := writeConcernOption(wc)
-		wcSpan.End()
+		span.Annotatef(nil, "Finished creating writeConcernOption")
 		if err != nil {
+			span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 			return result.FindAndModify{}, err
 		}
 		cmd.Opts = append(cmd.Opts, opt)
@@ -61,8 +66,11 @@ func FindOneAndDelete(
 	}
 
 	desc := ss.Description()
+	span.Annotatef(nil, "Invoking ss.Connection")
 	conn, err := ss.Connection(ctx)
+	span.Annotatef(nil, "Finished invoking ss.Connection")
 	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return result.FindAndModify{}, err
 	}
 
@@ -74,9 +82,16 @@ func FindOneAndDelete(
 			defer conn.Close()
 			_, _ = cmd.RoundTrip(ctx, desc, conn)
 		}()
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: "Unacknowledged write"})
 		return result.FindAndModify{}, ErrUnacknowledgedWrite
 	}
 	defer conn.Close()
 
-	return cmd.RoundTrip(ctx, desc, conn)
+	span.Annotatef(nil, "Invoking cmd.RoundTrip")
+	fim, err := cmd.RoundTrip(ctx, desc, conn)
+	span.Annotatef(nil, "Finished invoking cmd.RoundTrip")
+	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
+	}
+	return fim, err
 }

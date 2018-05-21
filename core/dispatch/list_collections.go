@@ -12,7 +12,8 @@ import (
 	"github.com/mongodb/mongo-go-driver/core/command"
 	"github.com/mongodb/mongo-go-driver/core/description"
 	"github.com/mongodb/mongo-go-driver/core/topology"
-	"github.com/mongodb/mongo-go-driver/internal/trace"
+
+	"go.opencensus.io/trace"
 )
 
 // ListCollections handles the full cycle dispatch and execution of a listCollections command against the provided
@@ -24,19 +25,31 @@ func ListCollections(
 	selector description.ServerSelector,
 ) (command.Cursor, error) {
 
-	ctx, span := trace.SpanFromFunctionCaller(ctx)
+	ctx, span := trace.StartSpan(ctx, "mongo-go/core/dispatch.ListCollections")
 	defer span.End()
 
+	span.Annotatef(nil, "Invoking topology.SelectServer")
 	ss, err := topo.SelectServer(ctx, selector)
+	span.Annotatef(nil, "Finished invoking topology.SelectServer")
 	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return nil, err
 	}
 
+	span.Annotatef(nil, "Invoking ss.Connection")
 	conn, err := ss.Connection(ctx)
+	span.Annotatef(nil, "Finished invoking ss.Connection")
 	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return nil, err
 	}
 	defer conn.Close()
 
-	return cmd.RoundTrip(ctx, ss.Description(), ss, conn)
+	span.Annotatef(nil, "Invoking cmd.RoundTrip")
+	cur, err := cmd.RoundTrip(ctx, ss.Description(), ss, conn)
+	span.Annotatef(nil, "Finished invoking cmd.RoundTrip")
+	if err != nil {
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
+	}
+	return cur, err
 }
