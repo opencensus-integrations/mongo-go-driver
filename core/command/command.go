@@ -10,12 +10,17 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/mongodb/mongo-go-driver/bson"
 	"github.com/mongodb/mongo-go-driver/bson/builder"
 	"github.com/mongodb/mongo-go-driver/core/description"
 	"github.com/mongodb/mongo-go-driver/core/readpref"
 	"github.com/mongodb/mongo-go-driver/core/wiremessage"
+
+	"github.com/mongodb/mongo-go-driver/internal/observability"
+	"go.opencensus.io/stats"
+	"go.opencensus.io/trace"
 )
 
 // Command represents a generic database command.
@@ -149,20 +154,38 @@ func (c *Command) Err() error { return c.err }
 
 // RoundTrip handles the execution of this command using the provided wiremessage.ReadWriter.
 func (c *Command) RoundTrip(ctx context.Context, desc description.SelectedServer, rw wiremessage.ReadWriter) (bson.Reader, error) {
+	ctx, span := trace.StartSpan(ctx, "mongo-go/core/command.(*Command).RoundTrip")
+	startTime := time.Now()
+	defer func() {
+		stats.Record(ctx, observability.MRoundTripLatencyMilliseconds.M(observability.SinceInMilliseconds(startTime)))
+		span.End()
+	}()
+
 	wm, err := c.Encode(desc)
 	if err != nil {
+		stats.Record(ctx, observability.MEncodeErrors.M(1))
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return nil, err
 	}
 
 	err = rw.WriteWireMessage(ctx, wm)
 	if err != nil {
+		stats.Record(ctx, observability.MWriteErrors.M(1))
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return nil, err
 	}
 	wm, err = rw.ReadWireMessage(ctx)
 	if err != nil {
+		stats.Record(ctx, observability.MReadErrors.M(1))
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return nil, err
 	}
-	return c.Decode(desc, wm).Result()
+	res, err := c.Decode(desc, wm).Result()
+	if err != nil {
+		stats.Record(ctx, observability.MDecodeErrors.M(1))
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
+	}
+	return res, err
 }
 
 func (c *Command) marshalCommand() (bson.Reader, error) {

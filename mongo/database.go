@@ -90,6 +90,9 @@ func (db *Database) Drop(ctx context.Context) error {
 		ctx = context.Background()
 	}
 
+	ctx, span := trace.StartSpan(ctx, "mongo-go/mongo.(*Database).Drop")
+	defer span.End()
+
 	cmd := command.DropDatabase{
 		DB: db.name,
 	}

@@ -16,6 +16,8 @@ import (
 	"github.com/mongodb/mongo-go-driver/core/topology"
 	"github.com/mongodb/mongo-go-driver/core/writeconcern"
 
+	"github.com/mongodb/mongo-go-driver/internal/observability"
+	"go.opencensus.io/stats"
 	"go.opencensus.io/trace"
 )
 
@@ -34,6 +36,7 @@ func Update(
 
 	ss, err := topo.SelectServer(ctx, selector)
 	if err != nil {
+		stats.Record(ctx, observability.MConnectionErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return result.Update{}, err
 	}
@@ -41,6 +44,7 @@ func Update(
 	if wc != nil {
 		opt, err := writeConcernOption(wc)
 		if err != nil {
+			stats.Record(ctx, observability.MWriteErrors.M(1))
 			span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 			return result.Update{}, err
 		}
@@ -65,6 +69,7 @@ func Update(
 	conn, err := ss.Connection(ctx)
 	span.Annotatef(nil, "Finished invoking ss.Connection")
 	if err != nil {
+		stats.Record(ctx, observability.MConnectionErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return result.Update{}, err
 	}
@@ -75,6 +80,8 @@ func Update(
 			defer conn.Close()
 			_, _ = cmd.RoundTrip(ctx, desc, conn)
 		}()
+		stats.Record(ctx, observability.MWriteErrors.M(1))
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: "Unacknowledged writes"})
 		return result.Update{}, ErrUnacknowledgedWrite
 	}
 	defer conn.Close()
@@ -82,7 +89,10 @@ func Update(
 	span.Annotatef(nil, "Invoking cmd.RoundTrip")
 	ures, err := cmd.RoundTrip(ctx, desc, conn)
 	span.Annotatef(nil, "Finished invoking cmd.RoundTrip")
-	if err != nil {
+	if err == nil {
+		stats.Record(ctx, observability.MUpdates.M(1))
+	} else {
+		stats.Record(ctx, observability.MUpdateErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 	}
 	return ures, err

@@ -17,6 +17,9 @@ import (
 	"github.com/mongodb/mongo-go-driver/core/description"
 	"github.com/mongodb/mongo-go-driver/core/wiremessage"
 
+	"github.com/mongodb/mongo-go-driver/internal/observability"
+	"go.opencensus.io/stats"
+	"go.opencensus.io/tag"
 	"go.opencensus.io/trace"
 )
 
@@ -40,7 +43,7 @@ type MongoDBCRAuthenticator struct {
 
 // Auth authenticates the connection.
 func (a *MongoDBCRAuthenticator) Auth(ctx context.Context, desc description.Server, rw wiremessage.ReadWriter) error {
-
+	ctx, _ = tag.New(ctx, tag.Insert(observability.KeyType, "mongodbcr_authenticator"))
 	ctx, span := trace.StartSpan(ctx, "mongo-go/core/auth.(*MongoDBCRAuthenticator).Auth")
 	defer span.End()
 
@@ -49,7 +52,6 @@ func (a *MongoDBCRAuthenticator) Auth(ctx context.Context, desc description.Serv
 		span.Annotatef([]trace.Attribute{
 			trace.StringAttribute("arbiter_type", "RSA"),
 		}, "Arbiters cannot be authenticated")
-		span.Annotatef(nil, "Arbiters cannot be authenticated")
 		return nil
 	}
 
@@ -64,6 +66,7 @@ func (a *MongoDBCRAuthenticator) Auth(ctx context.Context, desc description.Serv
 	rdr, err := cmd.RoundTrip(ctx, ssdesc, rw)
 	span.Annotatef(nil, "Finished invoking cmd.RoundTrip")
 	if err != nil {
+		stats.Record(ctx, observability.MAuthErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return newError(err, MONGODBCR)
 	}
@@ -91,6 +94,7 @@ func (a *MongoDBCRAuthenticator) Auth(ctx context.Context, desc description.Serv
 	_, err = cmd.RoundTrip(ctx, ssdesc, rw)
 	span.Annotatef(nil, "Finished invoking cmd.RoundTrip")
 	if err != nil {
+		stats.Record(ctx, observability.MAuthErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return newError(err, MONGODBCR)
 	}

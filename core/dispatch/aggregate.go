@@ -15,6 +15,8 @@ import (
 	"github.com/mongodb/mongo-go-driver/core/topology"
 	"github.com/mongodb/mongo-go-driver/core/writeconcern"
 
+	"github.com/mongodb/mongo-go-driver/internal/observability"
+	"go.opencensus.io/stats"
 	"go.opencensus.io/trace"
 )
 
@@ -42,6 +44,7 @@ func Aggregate(
 		ss, err = topo.SelectServer(ctx, writeSelector)
 		span.Annotatef(nil, "Finished invoking topology.SelectServer")
 		if err != nil {
+			stats.Record(ctx, observability.MConnectionErrors.M(1))
 			span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 			return nil, err
 		}
@@ -50,6 +53,7 @@ func Aggregate(
 			elem, err := wc.MarshalBSONElement()
 			span.Annotatef(nil, "Finished invoking WriteConcern.MarshalBSONElement")
 			if err != nil {
+				stats.Record(ctx, observability.MMarshalErrors.M(1))
 				span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 				return nil, err
 			}
@@ -72,6 +76,8 @@ func Aggregate(
 		ss, err = topo.SelectServer(ctx, readSelector)
 		span.Annotatef(nil, "Finished invoking topology.SelectServer")
 		if err != nil {
+			stats.Record(ctx, observability.MConnectionErrors.M(1))
+			span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 			return nil, err
 		}
 	}
@@ -79,6 +85,7 @@ func Aggregate(
 	desc := ss.Description()
 	conn, err := ss.Connection(ctx)
 	if err != nil {
+		stats.Record(ctx, observability.MConnectionErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return nil, err
 	}
@@ -89,6 +96,7 @@ func Aggregate(
 			defer conn.Close()
 			_, _ = cmd.RoundTrip(ctx, desc, ss, conn)
 		}()
+		stats.Record(ctx, observability.MWriteErrors.M(1))
 		return nil, ErrUnacknowledgedWrite
 	}
 	defer conn.Close()
@@ -97,6 +105,7 @@ func Aggregate(
 	cur, err := cmd.RoundTrip(ctx, desc, ss, conn)
 	span.Annotatef(nil, "Finished invoking cmd.RoundTrip")
 	if err != nil {
+		stats.Record(ctx, observability.MAggregationErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 	}
 	return cur, err

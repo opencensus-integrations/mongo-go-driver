@@ -23,6 +23,9 @@ import (
 	"github.com/mongodb/mongo-go-driver/core/description"
 	"github.com/mongodb/mongo-go-driver/core/wiremessage"
 
+	"github.com/mongodb/mongo-go-driver/internal/observability"
+	"go.opencensus.io/stats"
+	"go.opencensus.io/tag"
 	"go.opencensus.io/trace"
 )
 
@@ -52,6 +55,7 @@ type ScramSHA1Authenticator struct {
 
 // Auth authenticates the connection.
 func (a *ScramSHA1Authenticator) Auth(ctx context.Context, desc description.Server, rw wiremessage.ReadWriter) error {
+	ctx, _ = tag.New(ctx, tag.Insert(observability.KeyType, "scramsha1_authenticator"))
 	ctx, span := trace.StartSpan(ctx, "mongo-go/core/auth.(*ScramSHA1Authenticator).Auth")
 	defer span.End()
 
@@ -64,6 +68,7 @@ func (a *ScramSHA1Authenticator) Auth(ctx context.Context, desc description.Serv
 
 	err := ConductSaslConversation(ctx, desc, rw, a.DB, client)
 	if err != nil {
+		stats.Record(ctx, observability.MAuthErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return err
 	}

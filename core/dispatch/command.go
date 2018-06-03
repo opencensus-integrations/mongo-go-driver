@@ -14,6 +14,8 @@ import (
 	"github.com/mongodb/mongo-go-driver/core/description"
 	"github.com/mongodb/mongo-go-driver/core/topology"
 
+	"github.com/mongodb/mongo-go-driver/internal/observability"
+	"go.opencensus.io/stats"
 	"go.opencensus.io/trace"
 )
 
@@ -31,12 +33,14 @@ func Command(
 
 	ss, err := topo.SelectServer(ctx, selector)
 	if err != nil {
+		stats.Record(ctx, observability.MConnectionErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return nil, err
 	}
 
 	conn, err := ss.Connection(ctx)
 	if err != nil {
+		stats.Record(ctx, observability.MConnectionErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return nil, err
 	}
@@ -44,6 +48,7 @@ func Command(
 
 	br, err := cmd.RoundTrip(ctx, ss.Description(), conn)
 	if err != nil {
+		stats.Record(ctx, observability.MCommandErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 	}
 	return br, err

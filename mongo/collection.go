@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/mongodb/mongo-go-driver/bson"
 	"github.com/mongodb/mongo-go-driver/core/command"
@@ -20,6 +21,9 @@ import (
 	"github.com/mongodb/mongo-go-driver/core/readpref"
 	"github.com/mongodb/mongo-go-driver/core/writeconcern"
 
+	"github.com/mongodb/mongo-go-driver/internal/observability"
+	"go.opencensus.io/stats"
+	"go.opencensus.io/tag"
 	"go.opencensus.io/trace"
 )
 
@@ -76,13 +80,19 @@ func (coll *Collection) InsertOne(ctx context.Context, document interface{},
 		ctx = context.Background()
 	}
 
-	ctx, span := trace.StartSpan(ctx, "mongo-go/mongo/(*Collection).InsertOne")
-	defer span.End()
+	ctx, _ = tag.New(ctx, tag.Insert(observability.KeyType, "insertOne"))
+	ctx, span := trace.StartSpan(ctx, "mongo-go/mongo.(*Collection).InsertOne")
+	startTime := time.Now()
+	defer func() {
+		stats.Record(ctx, observability.MRoundTripLatencyMilliseconds.M(observability.SinceInMilliseconds(startTime)))
+		span.End()
+	}()
 
 	span.Annotatef(nil, "Starting TransformDocument")
 	doc, err := TransformDocument(document)
 	span.Annotatef(nil, "Finished TransformDocument")
 	if err != nil {
+		stats.Record(ctx, observability.MInsertionErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return nil, err
 	}
@@ -91,6 +101,7 @@ func (coll *Collection) InsertOne(ctx context.Context, document interface{},
 	insertedID, err := ensureID(doc)
 	span.Annotatef(nil, "Finished EnsureID", nil)
 	if err != nil {
+		stats.Record(ctx, observability.MInsertionErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return nil, err
 	}
@@ -109,9 +120,14 @@ func (coll *Collection) InsertOne(ctx context.Context, document interface{},
 
 	res, err := dispatch.Insert(ctx, cmd, coll.client.topology, coll.writeSelector, coll.writeConcern)
 	rr, err := processWriteError(res.WriteConcernError, res.WriteErrors, err)
-	if err != nil {
+
+	if err == nil {
+		stats.Record(ctx, observability.MInsertions.M(1))
+	} else {
+		stats.Record(ctx, observability.MInsertionErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 	}
+
 	if rr&rrOne == 0 {
 		return nil, err
 	}
@@ -135,8 +151,13 @@ func (coll *Collection) InsertMany(ctx context.Context, documents []interface{},
 		ctx = context.Background()
 	}
 
+	ctx, _ = tag.New(ctx, tag.Insert(observability.KeyType, "insertMany"))
 	ctx, span := trace.StartSpan(ctx, "mongo-go/mongo.(*Collection).InsertMany")
-	defer span.End()
+	startTime := time.Now()
+	defer func() {
+		stats.Record(ctx, observability.MRoundTripLatencyMilliseconds.M(observability.SinceInMilliseconds(startTime)))
+		span.End()
+	}()
 
 	result := make([]interface{}, len(documents))
 	docs := make([]*bson.Document, len(documents))
@@ -148,6 +169,7 @@ func (coll *Collection) InsertMany(ctx context.Context, documents []interface{},
 				trace.Int64Attribute("i", int64(i)),
 			}, "TransformDocument error")
 			span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
+			stats.Record(ctx, observability.MInsertionErrors.M(1))
 			return nil, err
 		}
 		insertedID, err := ensureID(bdoc)
@@ -156,6 +178,7 @@ func (coll *Collection) InsertMany(ctx context.Context, documents []interface{},
 				trace.Int64Attribute("i", int64(i)),
 			}, "ensureID error")
 			span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
+			stats.Record(ctx, observability.MInsertionErrors.M(1))
 			return nil, err
 		}
 
@@ -183,10 +206,11 @@ func (coll *Collection) InsertMany(ctx context.Context, documents []interface{},
 			Code:    int32(trace.StatusCodeDataLoss),
 			Message: "Unacknowleged write",
 		})
-		// TODO:(@odeke-em) Add stats for unacknowledgedWrites
+		stats.Record(ctx, observability.MInsertionErrors.M(1))
 		return &InsertManyResult{InsertedIDs: result}, ErrUnacknowledgedWrite
 
 	default:
+		stats.Record(ctx, observability.MInsertionErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return nil, err
 	}
@@ -197,7 +221,11 @@ func (coll *Collection) InsertMany(ctx context.Context, documents []interface{},
 			WriteConcernError: convertWriteConcernError(res.WriteConcernError),
 		}
 	}
-	if err != nil {
+
+	if err == nil {
+		stats.Record(ctx, observability.MInsertions.M(1))
+	} else {
+		stats.Record(ctx, observability.MInsertionErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 	}
 	return &InsertManyResult{InsertedIDs: result}, err
@@ -216,11 +244,17 @@ func (coll *Collection) DeleteOne(ctx context.Context, filter interface{},
 		ctx = context.Background()
 	}
 
+	ctx, _ = tag.New(ctx, tag.Insert(observability.KeyType, "deleteOne"))
 	ctx, span := trace.StartSpan(ctx, "mongo-go/mongo.(*Collection).DeleteOne")
-	defer span.End()
+	startTime := time.Now()
+	defer func() {
+		stats.Record(ctx, observability.MRoundTripLatencyMilliseconds.M(observability.SinceInMilliseconds(startTime)))
+		span.End()
+	}()
 
 	f, err := TransformDocument(filter)
 	if err != nil {
+		stats.Record(ctx, observability.MDeletionErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return nil, err
 	}
@@ -239,7 +273,10 @@ func (coll *Collection) DeleteOne(ctx context.Context, filter interface{},
 
 	res, err := dispatch.Delete(ctx, cmd, coll.client.topology, coll.writeSelector, coll.writeConcern)
 	rr, err := processWriteError(res.WriteConcernError, res.WriteErrors, err)
-	if err != nil {
+	if err == nil {
+		stats.Record(ctx, observability.MDeletions.M(1))
+	} else {
+		stats.Record(ctx, observability.MDeletionErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 	}
 	if rr&rrOne == 0 {
@@ -262,11 +299,17 @@ func (coll *Collection) DeleteMany(ctx context.Context, filter interface{},
 		ctx = context.Background()
 	}
 
+	ctx, _ = tag.New(ctx, tag.Insert(observability.KeyType, "deleteMany"))
 	ctx, span := trace.StartSpan(ctx, "mongo-go/mongo.(*Collection).DeleteMany")
-	defer span.End()
+	startTime := time.Now()
+	defer func() {
+		stats.Record(ctx, observability.MRoundTripLatencyMilliseconds.M(observability.SinceInMilliseconds(startTime)))
+		span.End()
+	}()
 
 	f, err := TransformDocument(filter)
 	if err != nil {
+		stats.Record(ctx, observability.MDeletionErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return nil, err
 	}
@@ -281,9 +324,13 @@ func (coll *Collection) DeleteMany(ctx context.Context, filter interface{},
 
 	res, err := dispatch.Delete(ctx, cmd, coll.client.topology, coll.writeSelector, coll.writeConcern)
 	rr, err := processWriteError(res.WriteConcernError, res.WriteErrors, err)
-	if err != nil {
+	if err == nil {
+		stats.Record(ctx, observability.MDeletions.M(1))
+	} else {
+		stats.Record(ctx, observability.MDeletionErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 	}
+
 	if rr&rrMany == 0 {
 		return nil, err
 	}
@@ -317,6 +364,7 @@ func (coll *Collection) updateOrReplaceOne(ctx context.Context, filter,
 
 	r, err := dispatch.Update(ctx, cmd, coll.client.topology, coll.writeSelector, coll.writeConcern)
 	if err != nil && err != dispatch.ErrUnacknowledgedWrite {
+		stats.Record(ctx, observability.MUpdateErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return nil, err
 	}
@@ -330,7 +378,10 @@ func (coll *Collection) updateOrReplaceOne(ctx context.Context, filter,
 	}
 
 	rr, err := processWriteError(r.WriteConcernError, r.WriteErrors, err)
-	if err != nil {
+	if err == nil {
+		stats.Record(ctx, observability.MUpdates.M(1), observability.MReplaces.M(1))
+	} else {
+		stats.Record(ctx, observability.MUpdateErrors.M(1), observability.MReplaceErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 	}
 	if rr&rrOne == 0 {
@@ -352,22 +403,30 @@ func (coll *Collection) UpdateOne(ctx context.Context, filter interface{}, updat
 		ctx = context.Background()
 	}
 
+	ctx, _ = tag.New(ctx, tag.Insert(observability.KeyType, "updateOne"))
 	ctx, span := trace.StartSpan(ctx, "mongo-go/mongo.(*Collection).UpdateOne")
-	defer span.End()
+	startTime := time.Now()
+	defer func() {
+		stats.Record(ctx, observability.MRoundTripLatencyMilliseconds.M(observability.SinceInMilliseconds(startTime)))
+		span.End()
+	}()
 
 	f, err := TransformDocument(filter)
 	if err != nil {
+		stats.Record(ctx, observability.MUpdateErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return nil, err
 	}
 
 	u, err := TransformDocument(update)
 	if err != nil {
+		stats.Record(ctx, observability.MUpdateErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return nil, err
 	}
 
 	if err := ensureDollarKey(u); err != nil {
+		stats.Record(ctx, observability.MUpdateErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInvalidArgument), Message: err.Error()})
 		return nil, err
 	}
@@ -392,22 +451,30 @@ func (coll *Collection) UpdateMany(ctx context.Context, filter interface{}, upda
 		ctx = context.Background()
 	}
 
+	ctx, _ = tag.New(ctx, tag.Insert(observability.KeyType, "updateMany"))
 	ctx, span := trace.StartSpan(ctx, "mongo-go/mongo.(*Collection).UpdateMany")
-	defer span.End()
+	startTime := time.Now()
+	defer func() {
+		stats.Record(ctx, observability.MRoundTripLatencyMilliseconds.M(observability.SinceInMilliseconds(startTime)))
+		span.End()
+	}()
 
 	f, err := TransformDocument(filter)
 	if err != nil {
+		stats.Record(ctx, observability.MUpdateErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return nil, err
 	}
 
 	u, err := TransformDocument(update)
 	if err != nil {
+		stats.Record(ctx, observability.MUpdateErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return nil, err
 	}
 
 	if err = ensureDollarKey(u); err != nil {
+		stats.Record(ctx, observability.MUpdateErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return nil, err
 	}
@@ -443,12 +510,16 @@ func (coll *Collection) UpdateMany(ctx context.Context, filter interface{}, upda
 	}
 
 	rr, err := processWriteError(r.WriteConcernError, r.WriteErrors, err)
-	if err != nil {
+	if err == nil {
+		stats.Record(ctx, observability.MUpdates.M(1))
+	} else {
+		stats.Record(ctx, observability.MUpdateErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 	}
 	if rr&rrMany == 0 {
 		return nil, err
 	}
+
 	return res, err
 }
 
@@ -465,8 +536,13 @@ func (coll *Collection) ReplaceOne(ctx context.Context, filter interface{},
 		ctx = context.Background()
 	}
 
+	ctx, _ = tag.New(ctx, tag.Insert(observability.KeyType, "replaceOne"))
 	ctx, span := trace.StartSpan(ctx, "mongo-go/mongo.(*Collection).ReplaceOne")
-	defer span.End()
+	startTime := time.Now()
+	defer func() {
+		stats.Record(ctx, observability.MRoundTripLatencyMilliseconds.M(observability.SinceInMilliseconds(startTime)))
+		span.End()
+	}()
 
 	f, err := TransformDocument(filter)
 	if err != nil {
@@ -476,11 +552,13 @@ func (coll *Collection) ReplaceOne(ctx context.Context, filter interface{},
 
 	r, err := TransformDocument(replacement)
 	if err != nil {
+		stats.Record(ctx, observability.MReplaceErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return nil, err
 	}
 
 	if elem, ok := r.ElementAtOK(0); ok && strings.HasPrefix(elem.Key(), "$") {
+		stats.Record(ctx, observability.MReplaceErrors.M(1))
 		span.SetStatus(trace.Status{
 			Code:    int32(trace.StatusCodeInvalidArgument),
 			Message: "Cannot contain keys beginning with '$'",
@@ -515,11 +593,17 @@ func (coll *Collection) Aggregate(ctx context.Context, pipeline interface{},
 		ctx = context.Background()
 	}
 
+	ctx, _ = tag.New(ctx, tag.Insert(observability.KeyType, "aggregate"))
 	ctx, span := trace.StartSpan(ctx, "mongo-go/mongo.(*Collection).Aggregate")
-	defer span.End()
+	startTime := time.Now()
+	defer func() {
+		stats.Record(ctx, observability.MRoundTripLatencyMilliseconds.M(observability.SinceInMilliseconds(startTime)))
+		span.End()
+	}()
 
 	pipelineArr, err := transformAggregatePipeline(pipeline)
 	if err != nil {
+		stats.Record(ctx, observability.MAggregationErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return nil, err
 	}
@@ -551,11 +635,17 @@ func (coll *Collection) Count(ctx context.Context, filter interface{},
 		ctx = context.Background()
 	}
 
+	ctx, _ = tag.New(ctx, tag.Insert(observability.KeyType, "count"))
 	ctx, span := trace.StartSpan(ctx, "mongo-go/mongo.(*Collection).Count")
-	defer span.End()
+	startTime := time.Now()
+	defer func() {
+		stats.Record(ctx, observability.MRoundTripLatencyMilliseconds.M(observability.SinceInMilliseconds(startTime)))
+		span.End()
+	}()
 
 	f, err := TransformDocument(filter)
 	if err != nil {
+		stats.Record(ctx, observability.MCountErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return 0, err
 	}
@@ -588,8 +678,13 @@ func (coll *Collection) Distinct(ctx context.Context, fieldName string, filter i
 		ctx = context.Background()
 	}
 
+	ctx, _ = tag.New(ctx, tag.Insert(observability.KeyType, "distinct"))
 	ctx, span := trace.StartSpan(ctx, "mongo-go/mongo.(*Collection).Distinct")
-	defer span.End()
+	startTime := time.Now()
+	defer func() {
+		stats.Record(ctx, observability.MRoundTripLatencyMilliseconds.M(observability.SinceInMilliseconds(startTime)))
+		span.End()
+	}()
 
 	var f *bson.Document
 	var err error
@@ -598,6 +693,7 @@ func (coll *Collection) Distinct(ctx context.Context, fieldName string, filter i
 		f, err = TransformDocument(filter)
 		span.Annotatef(nil, "Finished TransformDocument with filter")
 		if err != nil {
+			stats.Record(ctx, observability.MDistinctionErrors.M(1))
 			span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 			return nil, err
 		}
@@ -633,8 +729,13 @@ func (coll *Collection) Find(ctx context.Context, filter interface{},
 		ctx = context.Background()
 	}
 
+	ctx, _ = tag.New(ctx, tag.Insert(observability.KeyType, "find"))
 	ctx, span := trace.StartSpan(ctx, "mongo-go/mongo.(*Collection).Find")
-	defer span.End()
+	startTime := time.Now()
+	defer func() {
+		stats.Record(ctx, observability.MRoundTripLatencyMilliseconds.M(observability.SinceInMilliseconds(startTime)))
+		span.End()
+	}()
 
 	var f *bson.Document
 	var err error
@@ -643,6 +744,7 @@ func (coll *Collection) Find(ctx context.Context, filter interface{},
 		f, err = TransformDocument(filter)
 		span.Annotatef(nil, "Finished TransformDocument with filter")
 		if err != nil {
+			stats.Record(ctx, observability.MFindErrors.M(1))
 			span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 			return nil, err
 		}
@@ -676,8 +778,13 @@ func (coll *Collection) FindOne(ctx context.Context, filter interface{},
 		ctx = context.Background()
 	}
 
+	ctx, _ = tag.New(ctx, tag.Insert(observability.KeyType, "findOne"))
 	ctx, span := trace.StartSpan(ctx, "mongo-go/mongo.(*Collection).FindOne")
-	defer span.End()
+	startTime := time.Now()
+	defer func() {
+		stats.Record(ctx, observability.MRoundTripLatencyMilliseconds.M(observability.SinceInMilliseconds(startTime)))
+		span.End()
+	}()
 
 	findOpts := make([]options.FindOptioner, 0, len(opts))
 	for _, opt := range opts {
@@ -693,6 +800,7 @@ func (coll *Collection) FindOne(ctx context.Context, filter interface{},
 		f, err = TransformDocument(filter)
 		span.Annotatef(nil, "Finished TransformDocument with filter")
 		if err != nil {
+			stats.Record(ctx, observability.MFindErrors.M(1))
 			span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 			return &DocumentResult{err: err}
 		}
@@ -730,8 +838,13 @@ func (coll *Collection) FindOneAndDelete(ctx context.Context, filter interface{}
 		ctx = context.Background()
 	}
 
+	ctx, _ = tag.New(ctx, tag.Insert(observability.KeyType, "findOneAndDelete"))
 	ctx, span := trace.StartSpan(ctx, "mongo-go/mongo.(*Collection).FindOneAndDelete")
-	defer span.End()
+	startTime := time.Now()
+	defer func() {
+		stats.Record(ctx, observability.MRoundTripLatencyMilliseconds.M(observability.SinceInMilliseconds(startTime)))
+		span.End()
+	}()
 
 	var f *bson.Document
 	var err error
@@ -740,6 +853,7 @@ func (coll *Collection) FindOneAndDelete(ctx context.Context, filter interface{}
 		f, err = TransformDocument(filter)
 		span.Annotatef(nil, "Finished TransformDocument with filter")
 		if err != nil {
+			stats.Record(ctx, observability.MFindErrors.M(1), observability.MDeletionErrors.M(1))
 			span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 			return &DocumentResult{err: err}
 		}
@@ -776,13 +890,19 @@ func (coll *Collection) FindOneAndReplace(ctx context.Context, filter interface{
 		ctx = context.Background()
 	}
 
+	ctx, _ = tag.New(ctx, tag.Insert(observability.KeyType, "findOneAndReplace"))
 	ctx, span := trace.StartSpan(ctx, "mongo-go/mongo.(*Collection).FindOneAndReplace")
-	defer span.End()
+	startTime := time.Now()
+	defer func() {
+		stats.Record(ctx, observability.MRoundTripLatencyMilliseconds.M(observability.SinceInMilliseconds(startTime)))
+		span.End()
+	}()
 
 	span.Annotatef(nil, "Invoking TransformDocument with filter")
 	f, err := TransformDocument(filter)
 	span.Annotatef(nil, "Finished TransformDocument with filter")
 	if err != nil {
+		stats.Record(ctx, observability.MFindErrors.M(1), observability.MReplaceErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return &DocumentResult{err: err}
 	}
@@ -791,6 +911,7 @@ func (coll *Collection) FindOneAndReplace(ctx context.Context, filter interface{
 	r, err := TransformDocument(replacement)
 	span.Annotatef(nil, "Finished TransformDocument with replacement")
 	if err != nil {
+		stats.Record(ctx, observability.MFindErrors.M(1), observability.MReplaceErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return &DocumentResult{err: err}
 	}
@@ -831,13 +952,19 @@ func (coll *Collection) FindOneAndUpdate(ctx context.Context, filter interface{}
 		ctx = context.Background()
 	}
 
+	ctx, _ = tag.New(ctx, tag.Insert(observability.KeyType, "findOneAndUpdate"))
 	ctx, span := trace.StartSpan(ctx, "mongo-go/mongo.(*Collection).FindOneAndUpdate")
-	defer span.End()
+	startTime := time.Now()
+	defer func() {
+		stats.Record(ctx, observability.MRoundTripLatencyMilliseconds.M(observability.SinceInMilliseconds(startTime)))
+		span.End()
+	}()
 
 	span.Annotatef(nil, "Invoking TransformDocument with filter")
 	f, err := TransformDocument(filter)
 	span.Annotatef(nil, "Finished TransformDocument with filter")
 	if err != nil {
+		stats.Record(ctx, observability.MFindErrors.M(1), observability.MUpdateErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return &DocumentResult{err: err}
 	}
@@ -846,6 +973,7 @@ func (coll *Collection) FindOneAndUpdate(ctx context.Context, filter interface{}
 	u, err := TransformDocument(update)
 	span.Annotatef(nil, "Finished TransformDocument with update")
 	if err != nil {
+		stats.Record(ctx, observability.MFindErrors.M(1), observability.MUpdateErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return &DocumentResult{err: err}
 	}
@@ -875,11 +1003,17 @@ func (coll *Collection) FindOneAndUpdate(ctx context.Context, filter interface{}
 // supports resumability in the case of some errors.
 func (coll *Collection) Watch(ctx context.Context, pipeline interface{},
 	opts ...options.ChangeStreamOptioner) (Cursor, error) {
-	ctx, span := trace.StartSpan(ctx, "mongo-go/mongo.(*Collection)")
-	defer span.End()
+	ctx, _ = tag.New(ctx, tag.Insert(observability.KeyType, "watch"))
+	ctx, span := trace.StartSpan(ctx, "mongo-go/mongo.(*Collection).Watch")
+	startTime := time.Now()
+	defer func() {
+		stats.Record(ctx, observability.MRoundTripLatencyMilliseconds.M(observability.SinceInMilliseconds(startTime)))
+		span.End()
+	}()
 
 	cur, err := newChangeStream(ctx, coll, pipeline, opts...)
 	if err != nil {
+		stats.Record(ctx, observability.MWatchErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 	}
 	return cur, err
@@ -896,8 +1030,13 @@ func (coll *Collection) Drop(ctx context.Context) error {
 		ctx = context.Background()
 	}
 
+	ctx, _ = tag.New(ctx, tag.Insert(observability.KeyType, "drop"))
 	ctx, span := trace.StartSpan(ctx, "mongo-go/mongo.(*Collection).Drop")
-	defer span.End()
+	startTime := time.Now()
+	defer func() {
+		stats.Record(ctx, observability.MRoundTripLatencyMilliseconds.M(observability.SinceInMilliseconds(startTime)))
+		span.End()
+	}()
 
 	cmd := command.DropCollection{
 		DB:         coll.db.name,
@@ -905,6 +1044,7 @@ func (coll *Collection) Drop(ctx context.Context) error {
 	}
 	_, err := dispatch.DropCollection(ctx, cmd, coll.client.topology, coll.writeSelector)
 	if err != nil && !command.IsNotFound(err) {
+		stats.Record(ctx, observability.MDropErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return err
 	}

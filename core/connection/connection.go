@@ -28,7 +28,10 @@ import (
 	"github.com/mongodb/mongo-go-driver/core/description"
 	"github.com/mongodb/mongo-go-driver/core/wiremessage"
 
+	"go.opencensus.io/stats"
 	"go.opencensus.io/trace"
+
+	"github.com/mongodb/mongo-go-driver/internal/observability"
 )
 
 var globalClientConnectionID uint64
@@ -271,7 +274,8 @@ func (c *connection) WriteWireMessage(ctx context.Context, wm wiremessage.WireMe
 		}
 	}
 
-	_, err = c.conn.Write(c.writeBuf)
+	nw, err := c.conn.Write(c.writeBuf)
+	stats.Record(ctx, observability.MWrites.M(1), observability.MBytesWritten.M(int64(nw)))
 	if err != nil {
 		c.Close()
 		return Error{
@@ -324,15 +328,23 @@ func (c *connection) ReadWireMessage(ctx context.Context) (wiremessage.WireMessa
 	}
 
 	var sizeBuf [4]byte
-	_, err := io.ReadFull(c.conn, sizeBuf[:])
+	var n, nr int64
+	ni, err := io.ReadFull(c.conn, sizeBuf[:])
+	nr += 1
+	defer func() {
+		stats.Record(ctx, observability.MReads.M(nr), observability.MBytesRead.M(n))
+	}()
+
 	if err != nil {
-		defer c.Close()
+		c.Close()
+		stats.Record(ctx, observability.MReadErrors.M(1))
 		return nil, Error{
 			ConnectionID: c.id,
 			Wrapped:      err,
 			message:      "unable to decode message length",
 		}
 	}
+	n += int64(ni)
 
 	size := readInt32(sizeBuf[:], 0)
 
@@ -346,25 +358,33 @@ func (c *connection) ReadWireMessage(ctx context.Context) (wiremessage.WireMessa
 
 	c.readBuf[0], c.readBuf[1], c.readBuf[2], c.readBuf[3] = sizeBuf[0], sizeBuf[1], sizeBuf[2], sizeBuf[3]
 
-	_, err = io.ReadFull(c.conn, c.readBuf[4:])
+	ni, err = io.ReadFull(c.conn, c.readBuf[4:])
+	nr += 1
 	if err != nil {
-		defer c.Close()
+		c.Close()
+		stats.Record(ctx, observability.MReadErrors.M(1))
 		return nil, Error{
 			ConnectionID: c.id,
 			Wrapped:      err,
 			message:      "unable to read full message",
 		}
 	}
+	n += int64(ni)
 
 	hdr, err := wiremessage.ReadHeader(c.readBuf, 0)
 	if err != nil {
-		defer c.Close()
+		c.Close()
+		stats.Record(ctx, observability.MReadErrors.M(1))
 		return nil, Error{
 			ConnectionID: c.id,
 			Wrapped:      err,
 			message:      "unable to decode header",
 		}
 	}
+	// Calculating the bytes read for the header is tricky since the header doesn't seem to
+	// give back that information. However, the code shows the header is read as per:
+	//      https://github.com/mongodb/mongo-go-driver/blob/de03a35e8661ae6df623f41ec8f616ffd8ef6131/core/wiremessage/header.go#L41-L51
+	n += 16
 
 	var wm wiremessage.WireMessage
 	switch hdr.OpCode {
@@ -372,7 +392,8 @@ func (c *connection) ReadWireMessage(ctx context.Context) (wiremessage.WireMessa
 		var r wiremessage.Reply
 		err := r.UnmarshalWireMessage(c.readBuf)
 		if err != nil {
-			defer c.Close()
+			c.Close()
+			stats.Record(ctx, observability.MUnmarshalErrors.M(1))
 			return nil, Error{
 				ConnectionID: c.id,
 				Wrapped:      err,
@@ -381,7 +402,8 @@ func (c *connection) ReadWireMessage(ctx context.Context) (wiremessage.WireMessa
 		}
 		wm = r
 	default:
-		defer c.Close()
+		c.Close()
+		stats.Record(ctx, observability.MReadErrors.M(1))
 		return nil, Error{
 			ConnectionID: c.id,
 			message:      fmt.Sprintf("opcode %s not implemented", hdr.OpCode),
