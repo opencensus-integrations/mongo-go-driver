@@ -15,6 +15,9 @@ import (
 	"github.com/mongodb/mongo-go-driver/core/topology"
 	"github.com/mongodb/mongo-go-driver/core/writeconcern"
 
+	"github.com/mongodb/mongo-go-driver/internal/observability"
+	"go.opencensus.io/stats"
+	"go.opencensus.io/tag"
 	"go.opencensus.io/trace"
 )
 
@@ -28,6 +31,7 @@ func Aggregate(
 	wc *writeconcern.WriteConcern,
 ) (command.Cursor, error) {
 
+	ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyMethod, "aggregate"))
 	ctx, span := trace.StartSpan(ctx, "mongo-go/core/dispatch.Aggregate")
 	defer span.End()
 
@@ -42,6 +46,8 @@ func Aggregate(
 		ss, err = topo.SelectServer(ctx, writeSelector)
 		span.Annotatef(nil, "Finished invoking topology.SelectServer")
 		if err != nil {
+			ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "topo_selectserver"))
+			stats.Record(ctx, observability.MErrors.M(1))
 			span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 			return nil, err
 		}
@@ -50,6 +56,8 @@ func Aggregate(
 			elem, err := wc.MarshalBSONElement()
 			span.Annotatef(nil, "Finished invoking WriteConcern.MarshalBSONElement")
 			if err != nil {
+				ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "marshal_bson_element"))
+				stats.Record(ctx, observability.MErrors.M(1))
 				span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 				return nil, err
 			}
@@ -72,6 +80,9 @@ func Aggregate(
 		ss, err = topo.SelectServer(ctx, readSelector)
 		span.Annotatef(nil, "Finished invoking topology.SelectServer")
 		if err != nil {
+			ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "topo_selectserver"))
+			stats.Record(ctx, observability.MErrors.M(1))
+			span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 			return nil, err
 		}
 	}
@@ -79,6 +90,8 @@ func Aggregate(
 	desc := ss.Description()
 	conn, err := ss.Connection(ctx)
 	if err != nil {
+		ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "connection"))
+		stats.Record(ctx, observability.MErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return nil, err
 	}
@@ -89,6 +102,8 @@ func Aggregate(
 			defer conn.Close()
 			_, _ = cmd.RoundTrip(ctx, desc, ss, conn)
 		}()
+		ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "write"))
+		stats.Record(ctx, observability.MErrors.M(1))
 		return nil, ErrUnacknowledgedWrite
 	}
 	defer conn.Close()
@@ -97,6 +112,8 @@ func Aggregate(
 	cur, err := cmd.RoundTrip(ctx, desc, ss, conn)
 	span.Annotatef(nil, "Finished invoking cmd.RoundTrip")
 	if err != nil {
+		ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "roundtrip"))
+		stats.Record(ctx, observability.MErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 	}
 	return cur, err

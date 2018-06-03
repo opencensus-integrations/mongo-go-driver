@@ -8,6 +8,7 @@ package mongo
 
 import (
 	"context"
+        "time"
 
 	"github.com/mongodb/mongo-go-driver/bson"
 	"github.com/mongodb/mongo-go-driver/core/command"
@@ -17,6 +18,9 @@ import (
 	"github.com/mongodb/mongo-go-driver/core/readpref"
 	"github.com/mongodb/mongo-go-driver/core/writeconcern"
 
+	"github.com/mongodb/mongo-go-driver/internal/observability"
+	"go.opencensus.io/stats"
+	"go.opencensus.io/tag"
 	"go.opencensus.io/trace"
 )
 
@@ -73,12 +77,19 @@ func (db *Database) RunCommand(ctx context.Context, runCommand interface{}) (bso
 		ctx = context.Background()
 	}
 
+	ctx, _ = tag.New(ctx, tag.Insert(observability.KeyMethod, "db_runcommand"))
 	ctx, span := trace.StartSpan(ctx, "mongo-go/mongo.(*Database).RunCommand")
-	defer span.End()
+	startTime := time.Now()
+	defer func() {
+		stats.Record(ctx, observability.MRoundTripLatencyMilliseconds.M(observability.SinceInMilliseconds(startTime)), observability.MCalls.M(1))
+		span.End()
+	}()
 
 	cmd := command.Command{DB: db.Name(), Command: runCommand}
 	br, err := dispatch.Command(ctx, cmd, db.client.topology, db.writeSelector)
 	if err != nil {
+		ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "dispatch_command"))
+		stats.Record(ctx, observability.MErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 	}
 	return br, err
@@ -90,11 +101,22 @@ func (db *Database) Drop(ctx context.Context) error {
 		ctx = context.Background()
 	}
 
+	ctx, _ = tag.New(ctx, tag.Insert(observability.KeyMethod, "db_drop"))
+	ctx, span := trace.StartSpan(ctx, "mongo-go/mongo.(*Database).Drop")
+	startTime := time.Now()
+	defer func() {
+		stats.Record(ctx, observability.MRoundTripLatencyMilliseconds.M(observability.SinceInMilliseconds(startTime)), observability.MCalls.M(1))
+		span.End()
+	}()
+
 	cmd := command.DropDatabase{
 		DB: db.name,
 	}
 	_, err := dispatch.DropDatabase(ctx, cmd, db.client.topology, db.writeSelector)
 	if err != nil && !command.IsNotFound(err) {
+		ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "dispatch_dropdatabase"))
+		stats.Record(ctx, observability.MErrors.M(1))
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return err
 	}
 	return nil

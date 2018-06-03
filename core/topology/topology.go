@@ -281,7 +281,7 @@ func (t *Topology) findServer(selected description.Server) (*SelectedServer, err
 // selectServer is the core piece of server selection. It handles getting
 // topology descriptions and running sever selection on those descriptions.
 func (t *Topology) selectServer(ctx context.Context, subscriptionCh <-chan description.Topology, ss description.ServerSelector, timeoutCh <-chan time.Time) ([]description.Server, error) {
-	ctx, span := trace.StartSpan(ctx, "mongo-go/core/topology.(*Topology")
+	ctx, span := trace.StartSpan(ctx, "mongo-go/core/topology.(*Topology).selectServer")
 	defer span.End()
 
 	var current description.Topology

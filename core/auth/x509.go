@@ -14,6 +14,9 @@ import (
 	"github.com/mongodb/mongo-go-driver/core/description"
 	"github.com/mongodb/mongo-go-driver/core/wiremessage"
 
+	"github.com/mongodb/mongo-go-driver/internal/observability"
+	"go.opencensus.io/stats"
+	"go.opencensus.io/tag"
 	"go.opencensus.io/trace"
 )
 
@@ -31,7 +34,8 @@ type MongoDBX509Authenticator struct {
 
 // Auth implements the Authenticator interface.
 func (a *MongoDBX509Authenticator) Auth(ctx context.Context, desc description.Server, rw wiremessage.ReadWriter) error {
-	ctx, span := trace.StartSpan(ctx, "mongo-go/core/auth.(*MongoDBX509Authenticator")
+	ctx, _ = tag.New(ctx, tag.Insert(observability.KeyMethod, "mongodbx509_auth"))
+	ctx, span := trace.StartSpan(ctx, "mongo-go/core/auth.(*MongoDBX509Authenticator).Auth")
 	defer span.End()
 
 	authRequestDoc := bson.NewDocument(
@@ -49,6 +53,8 @@ func (a *MongoDBX509Authenticator) Auth(ctx context.Context, desc description.Se
 	_, err := authCmd.RoundTrip(ctx, ssdesc, rw)
 	span.Annotatef(nil, "Finished invoking authCmd.RoundTrip")
 	if err != nil {
+		ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "authcmd_roundtrip"))
+		stats.Record(ctx, observability.MErrors.M(1))
 		span.SetStatus(trace.Status{
 			Code:    int32(trace.StatusCodeInternal),
 			Message: err.Error(),

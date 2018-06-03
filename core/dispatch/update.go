@@ -16,6 +16,9 @@ import (
 	"github.com/mongodb/mongo-go-driver/core/topology"
 	"github.com/mongodb/mongo-go-driver/core/writeconcern"
 
+	"github.com/mongodb/mongo-go-driver/internal/observability"
+	"go.opencensus.io/stats"
+	"go.opencensus.io/tag"
 	"go.opencensus.io/trace"
 )
 
@@ -29,11 +32,14 @@ func Update(
 	wc *writeconcern.WriteConcern,
 ) (result.Update, error) {
 
+	ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyMethod, "update"))
 	ctx, span := trace.StartSpan(ctx, "mongo-go/core/dispatch.Update")
 	defer span.End()
 
 	ss, err := topo.SelectServer(ctx, selector)
 	if err != nil {
+		ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "connect"))
+		stats.Record(ctx, observability.MErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return result.Update{}, err
 	}
@@ -41,6 +47,8 @@ func Update(
 	if wc != nil {
 		opt, err := writeConcernOption(wc)
 		if err != nil {
+			ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "write"))
+			stats.Record(ctx, observability.MErrors.M(1))
 			span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 			return result.Update{}, err
 		}
@@ -65,6 +73,8 @@ func Update(
 	conn, err := ss.Connection(ctx)
 	span.Annotatef(nil, "Finished invoking ss.Connection")
 	if err != nil {
+		ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "connection"))
+		stats.Record(ctx, observability.MErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return result.Update{}, err
 	}
@@ -75,6 +85,9 @@ func Update(
 			defer conn.Close()
 			_, _ = cmd.RoundTrip(ctx, desc, conn)
 		}()
+		ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "write"))
+		stats.Record(ctx, observability.MErrors.M(1))
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: "Unacknowledged writes"})
 		return result.Update{}, ErrUnacknowledgedWrite
 	}
 	defer conn.Close()
@@ -82,7 +95,11 @@ func Update(
 	span.Annotatef(nil, "Invoking cmd.RoundTrip")
 	ures, err := cmd.RoundTrip(ctx, desc, conn)
 	span.Annotatef(nil, "Finished invoking cmd.RoundTrip")
-	if err != nil {
+	if err == nil {
+		stats.Record(ctx, observability.MUpdates.M(1))
+	} else {
+		ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "update"))
+		stats.Record(ctx, observability.MErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 	}
 	return ures, err

@@ -16,6 +16,9 @@ import (
 	"github.com/mongodb/mongo-go-driver/core/topology"
 	"github.com/mongodb/mongo-go-driver/core/writeconcern"
 
+	"github.com/mongodb/mongo-go-driver/internal/observability"
+	"go.opencensus.io/stats"
+	"go.opencensus.io/tag"
 	"go.opencensus.io/trace"
 )
 
@@ -30,12 +33,15 @@ func Delete(
 ) (result.Delete, error) {
 
 	ctx, span := trace.StartSpan(ctx, "mongo-go/core/dispatch.Delete")
+	ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyMethod, "delete"))
 	defer span.End()
 
 	span.Annotatef(nil, "Invoking topology.SelectServer")
 	ss, err := topo.SelectServer(ctx, selector)
 	span.Annotatef(nil, "Finished invoking topology.SelectServer")
 	if err != nil {
+		ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "connection"))
+		stats.Record(ctx, observability.MErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return result.Delete{}, err
 	}
@@ -45,6 +51,8 @@ func Delete(
 		opt, err := writeConcernOption(wc)
 		span.Annotatef(nil, "Finished creating writeConcernOption")
 		if err != nil {
+			ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "write"))
+			stats.Record(ctx, observability.MErrors.M(1))
 			span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 			return result.Delete{}, err
 		}
@@ -69,6 +77,8 @@ func Delete(
 	conn, err := ss.Connection(ctx)
 	span.Annotatef(nil, "Finished creating ss.Connection")
 	if err != nil {
+		ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "connection"))
+		stats.Record(ctx, observability.MErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return result.Delete{}, err
 	}
@@ -79,6 +89,8 @@ func Delete(
 			defer conn.Close()
 			_, _ = cmd.RoundTrip(ctx, desc, conn)
 		}()
+		ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "write"))
+		stats.Record(ctx, observability.MErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: "Unacknowledged write"})
 		return result.Delete{}, ErrUnacknowledgedWrite
 	}
@@ -88,6 +100,8 @@ func Delete(
 	di, err := cmd.RoundTrip(ctx, desc, conn)
 	span.Annotatef(nil, "Finished invoking cmd.RoundTrip")
 	if err != nil {
+		ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "delete"))
+		stats.Record(ctx, observability.MErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 	}
 	return di, err

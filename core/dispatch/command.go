@@ -14,6 +14,9 @@ import (
 	"github.com/mongodb/mongo-go-driver/core/description"
 	"github.com/mongodb/mongo-go-driver/core/topology"
 
+	"github.com/mongodb/mongo-go-driver/internal/observability"
+	"go.opencensus.io/stats"
+	"go.opencensus.io/tag"
 	"go.opencensus.io/trace"
 )
 
@@ -26,17 +29,22 @@ func Command(
 	selector description.ServerSelector,
 ) (bson.Reader, error) {
 
+	ctx, _ = tag.New(ctx, tag.Insert(observability.KeyMethod, "command"))
 	ctx, span := trace.StartSpan(ctx, "mongo-go/core/dispatch.Command")
 	defer span.End()
 
 	ss, err := topo.SelectServer(ctx, selector)
 	if err != nil {
+		ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "topo_selectserver"))
+		stats.Record(ctx, observability.MErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return nil, err
 	}
 
 	conn, err := ss.Connection(ctx)
 	if err != nil {
+		ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "connection"))
+		stats.Record(ctx, observability.MErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return nil, err
 	}
@@ -44,6 +52,8 @@ func Command(
 
 	br, err := cmd.RoundTrip(ctx, ss.Description(), conn)
 	if err != nil {
+		ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "roundtrip"))
+		stats.Record(ctx, observability.MErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 	}
 	return br, err

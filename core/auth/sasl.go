@@ -14,6 +14,9 @@ import (
 	"github.com/mongodb/mongo-go-driver/core/description"
 	"github.com/mongodb/mongo-go-driver/core/wiremessage"
 
+	"github.com/mongodb/mongo-go-driver/internal/observability"
+	"go.opencensus.io/stats"
+	"go.opencensus.io/tag"
 	"go.opencensus.io/trace"
 )
 
@@ -32,7 +35,7 @@ type SaslClientCloser interface {
 
 // ConductSaslConversation handles running a sasl conversation with MongoDB.
 func ConductSaslConversation(ctx context.Context, desc description.Server, rw wiremessage.ReadWriter, db string, client SaslClient) error {
-
+	ctx, _ = tag.New(ctx, tag.Insert(observability.KeyMethod, "conduct_sasl_conversation"))
 	ctx, span := trace.StartSpan(ctx, "mongo-go/core/auth.ConductSaslConversation")
 	defer span.End()
 
@@ -54,6 +57,8 @@ func ConductSaslConversation(ctx context.Context, desc description.Server, rw wi
 
 	mech, payload, err := client.Start()
 	if err != nil {
+		ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "client_start"))
+		stats.Record(ctx, observability.MErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return newError(err, mech)
 	}
@@ -81,12 +86,16 @@ func ConductSaslConversation(ctx context.Context, desc description.Server, rw wi
 	rdr, err := saslStartCmd.RoundTrip(ctx, ssdesc, rw)
 	span.Annotatef(nil, "Finished invoking saslStartCmd.RoundTrip")
 	if err != nil {
+		ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "saslstartcmd_roundtrip"))
+		stats.Record(ctx, observability.MErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return newError(err, mech)
 	}
 
 	err = bson.Unmarshal(rdr, &saslResp)
 	if err != nil {
+		ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "unmarshal"))
+		stats.Record(ctx, observability.MErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return err
 	}
@@ -95,6 +104,8 @@ func ConductSaslConversation(ctx context.Context, desc description.Server, rw wi
 
 	for {
 		if saslResp.Code != 0 {
+			ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "auth"))
+			stats.Record(ctx, observability.MErrors.M(1))
 			span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: "Invalid saslResponse"})
 			return newError(err, mech)
 		}
@@ -105,6 +116,8 @@ func ConductSaslConversation(ctx context.Context, desc description.Server, rw wi
 
 		payload, err = client.Next(saslResp.Payload)
 		if err != nil {
+			ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "client_next"))
+			stats.Record(ctx, observability.MErrors.M(1))
 			span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 			return newError(err, mech)
 		}
@@ -126,12 +139,16 @@ func ConductSaslConversation(ctx context.Context, desc description.Server, rw wi
 		rdr, err = saslContinueCmd.RoundTrip(ctx, ssdesc, rw)
 		span.Annotatef(nil, "Finished invoking saslContinueCmd.RoundTrip")
 		if err != nil {
+			ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "saslcontinuecmd_roundtrip"))
+			stats.Record(ctx, observability.MErrors.M(1))
 			span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 			return newError(err, mech)
 		}
 
 		err = bson.Unmarshal(rdr, &saslResp)
 		if err != nil {
+			ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "unmarshal"))
+			stats.Record(ctx, observability.MErrors.M(1))
 			span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 			return err
 		}

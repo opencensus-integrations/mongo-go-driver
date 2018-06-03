@@ -5,12 +5,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/mongodb/mongo-go-driver/bson"
 	"github.com/mongodb/mongo-go-driver/core/command"
 	"github.com/mongodb/mongo-go-driver/core/dispatch"
 	"github.com/mongodb/mongo-go-driver/core/options"
 
+	"github.com/mongodb/mongo-go-driver/internal/observability"
+	"go.opencensus.io/stats"
+	"go.opencensus.io/tag"
 	"go.opencensus.io/trace"
 )
 
@@ -36,13 +40,20 @@ type IndexModel struct {
 
 // List returns a cursor iterating over all the indexes in the collection.
 func (iv IndexView) List(ctx context.Context) (Cursor, error) {
+	ctx, _ = tag.New(ctx, tag.Insert(observability.KeyMethod, "indexview_list"))
 	ctx, span := trace.StartSpan(ctx, "mongo-go/mongo.(IndexView).List")
-	defer span.End()
+	startTime := time.Now()
+	defer func() {
+		stats.Record(ctx, observability.MRoundTripLatencyMilliseconds.M(observability.SinceInMilliseconds(startTime)), observability.MCalls.M(1))
+		span.End()
+	}()
 
 	listCmd := command.ListIndexes{NS: iv.coll.namespace()}
 
 	cur, err := dispatch.ListIndexes(ctx, listCmd, iv.coll.client.topology, iv.coll.writeSelector)
 	if err != nil {
+		ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "dispatch_listindexes"))
+		stats.Record(ctx, observability.MErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 	}
 	return cur, err
@@ -50,8 +61,13 @@ func (iv IndexView) List(ctx context.Context) (Cursor, error) {
 
 // CreateOne creates a single index in the collection specified by the model.
 func (iv IndexView) CreateOne(ctx context.Context, model IndexModel, opts ...options.CreateIndexesOptioner) (string, error) {
+	ctx, _ = tag.New(ctx, tag.Insert(observability.KeyMethod, "indexview_create_one"))
 	ctx, span := trace.StartSpan(ctx, "mongo-go/mongo.(IndexView).CreateOne")
-	defer span.End()
+	startTime := time.Now()
+	defer func() {
+		stats.Record(ctx, observability.MRoundTripLatencyMilliseconds.M(observability.SinceInMilliseconds(startTime)), observability.MCalls.M(1))
+		span.End()
+	}()
 
 	names, err := iv.CreateMany(ctx, opts, model)
 	if err != nil {
@@ -64,8 +80,13 @@ func (iv IndexView) CreateOne(ctx context.Context, model IndexModel, opts ...opt
 // CreateMany creates multiple indexes in the collection specified by the models. The names of the
 // creates indexes are returned.
 func (iv IndexView) CreateMany(ctx context.Context, opts []options.CreateIndexesOptioner, models ...IndexModel) ([]string, error) {
+	ctx, _ = tag.New(ctx, tag.Insert(observability.KeyMethod, "indexview_create_many"))
 	ctx, span := trace.StartSpan(ctx, "mongo-go/mongo.(IndexView).CreateMany")
-	defer span.End()
+	startTime := time.Now()
+	defer func() {
+		stats.Record(ctx, observability.MRoundTripLatencyMilliseconds.M(observability.SinceInMilliseconds(startTime)), observability.MCalls.M(1))
+		span.End()
+	}()
 
 	names := make([]string, 0, len(models))
 	indexes := bson.NewArray()
@@ -84,6 +105,8 @@ func (iv IndexView) CreateMany(ctx context.Context, opts []options.CreateIndexes
 		if model.Options != nil {
 			err = index.Concat(model.Options)
 			if err != nil {
+				ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "index_concat"))
+				stats.Record(ctx, observability.MErrors.M(1))
 				return nil, err
 			}
 		}
@@ -96,6 +119,8 @@ func (iv IndexView) CreateMany(ctx context.Context, opts []options.CreateIndexes
 
 	_, err := dispatch.CreateIndexes(ctx, cmd, iv.coll.client.topology, iv.coll.writeSelector)
 	if err != nil {
+		ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "dispatch_create_indexes"))
+		stats.Record(ctx, observability.MErrors.M(1))
 		return nil, err
 	}
 
@@ -104,10 +129,18 @@ func (iv IndexView) CreateMany(ctx context.Context, opts []options.CreateIndexes
 
 // DropOne drops the index with the given name from the collection.
 func (iv IndexView) DropOne(ctx context.Context, name string, opts ...options.DropIndexesOptioner) (bson.Reader, error) {
+	ctx, _ = tag.New(ctx, tag.Insert(observability.KeyMethod, "indexview_drop_one"))
 	ctx, span := trace.StartSpan(ctx, "mongo-go/mongo.(IndexView).DropOne")
-	defer span.End()
+	startTime := time.Now()
+	defer func() {
+		stats.Record(ctx, observability.MRoundTripLatencyMilliseconds.M(observability.SinceInMilliseconds(startTime)), observability.MCalls.M(1))
+		span.End()
+	}()
 
 	if name == "*" {
+		ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "indexview_drop_one_namecheck"))
+		stats.Record(ctx, observability.MErrors.M(1))
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: "* used to drop multiple indices"})
 		return nil, ErrMultipleIndexDrop
 	}
 
@@ -118,8 +151,13 @@ func (iv IndexView) DropOne(ctx context.Context, name string, opts ...options.Dr
 
 // DropAll drops all indexes in the collection.
 func (iv IndexView) DropAll(ctx context.Context, opts ...options.DropIndexesOptioner) (bson.Reader, error) {
+	ctx, _ = tag.New(ctx, tag.Insert(observability.KeyMethod, "indexview_drop_all"))
 	ctx, span := trace.StartSpan(ctx, "mongo-go/mongo.(IndexView).DropAll")
-	defer span.End()
+	startTime := time.Now()
+	defer func() {
+		stats.Record(ctx, observability.MRoundTripLatencyMilliseconds.M(observability.SinceInMilliseconds(startTime)), observability.MCalls.M(1))
+		span.End()
+	}()
 
 	cmd := command.DropIndexes{NS: iv.coll.namespace(), Index: "*", Opts: opts}
 

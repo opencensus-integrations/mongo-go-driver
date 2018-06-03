@@ -17,6 +17,9 @@ import (
 	"github.com/mongodb/mongo-go-driver/core/description"
 	"github.com/mongodb/mongo-go-driver/core/wiremessage"
 
+	"github.com/mongodb/mongo-go-driver/internal/observability"
+	"go.opencensus.io/stats"
+	"go.opencensus.io/tag"
 	"go.opencensus.io/trace"
 )
 
@@ -40,7 +43,7 @@ type MongoDBCRAuthenticator struct {
 
 // Auth authenticates the connection.
 func (a *MongoDBCRAuthenticator) Auth(ctx context.Context, desc description.Server, rw wiremessage.ReadWriter) error {
-
+	ctx, _ = tag.New(ctx, tag.Insert(observability.KeyMethod, "mongodbcr_auth"))
 	ctx, span := trace.StartSpan(ctx, "mongo-go/core/auth.(*MongoDBCRAuthenticator).Auth")
 	defer span.End()
 
@@ -49,7 +52,6 @@ func (a *MongoDBCRAuthenticator) Auth(ctx context.Context, desc description.Serv
 		span.Annotatef([]trace.Attribute{
 			trace.StringAttribute("arbiter_type", "RSA"),
 		}, "Arbiters cannot be authenticated")
-		span.Annotatef(nil, "Arbiters cannot be authenticated")
 		return nil
 	}
 
@@ -64,6 +66,8 @@ func (a *MongoDBCRAuthenticator) Auth(ctx context.Context, desc description.Serv
 	rdr, err := cmd.RoundTrip(ctx, ssdesc, rw)
 	span.Annotatef(nil, "Finished invoking cmd.RoundTrip")
 	if err != nil {
+		ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "roundtrip"))
+		stats.Record(ctx, observability.MErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return newError(err, MONGODBCR)
 	}
@@ -74,6 +78,8 @@ func (a *MongoDBCRAuthenticator) Auth(ctx context.Context, desc description.Serv
 
 	err = bson.Unmarshal(rdr, &getNonceResult)
 	if err != nil {
+		ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "unmarshal"))
+		stats.Record(ctx, observability.MErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return err
 	}
@@ -91,6 +97,8 @@ func (a *MongoDBCRAuthenticator) Auth(ctx context.Context, desc description.Serv
 	_, err = cmd.RoundTrip(ctx, ssdesc, rw)
 	span.Annotatef(nil, "Finished invoking cmd.RoundTrip")
 	if err != nil {
+		ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "roundtrip"))
+		stats.Record(ctx, observability.MErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return newError(err, MONGODBCR)
 	}

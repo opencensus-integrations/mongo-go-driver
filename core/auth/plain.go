@@ -13,6 +13,9 @@ import (
 	"github.com/mongodb/mongo-go-driver/core/description"
 	"github.com/mongodb/mongo-go-driver/core/wiremessage"
 
+	"github.com/mongodb/mongo-go-driver/internal/observability"
+	"go.opencensus.io/stats"
+	"go.opencensus.io/tag"
 	"go.opencensus.io/trace"
 )
 
@@ -38,6 +41,7 @@ type PlainAuthenticator struct {
 
 // Auth authenticates the connection.
 func (a *PlainAuthenticator) Auth(ctx context.Context, desc description.Server, rw wiremessage.ReadWriter) error {
+	ctx, _ = tag.New(ctx, tag.Insert(observability.KeyMethod, "plain_auth"))
 	ctx, span := trace.StartSpan(ctx, "mongo-go/core/auth/(*PlainAuthenticator).Auth")
 	defer span.End()
 
@@ -46,6 +50,8 @@ func (a *PlainAuthenticator) Auth(ctx context.Context, desc description.Server, 
 		password: a.Password,
 	})
 	if err != nil {
+		ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "sasl_conversation"))
+		stats.Record(ctx, observability.MErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 	}
 	return err
