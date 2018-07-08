@@ -11,9 +11,9 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"golang.org/x/sync/semaphore"
+        "golang.org/x/sync/semaphore"
 
-	"github.com/mongodb/mongo-go-driver/core/addr"
+	"github.com/mongodb/mongo-go-driver/core/address"
 	"github.com/mongodb/mongo-go-driver/core/description"
 	"github.com/mongodb/mongo-go-driver/core/wiremessage"
 
@@ -65,7 +65,7 @@ type Pool interface {
 }
 
 type pool struct {
-	address    addr.Addr
+	address    address.Address
 	opts       []Option
 	conns      chan *pooledConnection
 	generation uint64
@@ -81,12 +81,12 @@ type pool struct {
 // NewPool creates a new pool that will hold size number of idle connections
 // and will create a max of capacity connections. It will use the provided
 // options.
-func NewPool(address addr.Addr, size, capacity uint64, opts ...Option) (Pool, error) {
+func NewPool(addr address.Address, size, capacity uint64, opts ...Option) (Pool, error) {
 	if size > capacity {
 		return nil, ErrSizeLargerThanCapacity
 	}
 	p := &pool{
-		address:    address,
+		address:    addr,
 		conns:      make(chan *pooledConnection, size),
 		generation: 0,
 		sem:        semaphore.NewWeighted(int64(capacity)),

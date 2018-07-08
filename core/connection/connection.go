@@ -24,7 +24,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/mongodb/mongo-go-driver/core/addr"
+	"github.com/mongodb/mongo-go-driver/core/address"
+	"github.com/mongodb/mongo-go-driver/core/compressor"
 	"github.com/mongodb/mongo-go-driver/core/description"
 	"github.com/mongodb/mongo-go-driver/core/wiremessage"
 
@@ -74,19 +75,19 @@ var DefaultDialer Dialer = &net.Dialer{}
 // handshake over a provided ReadWriter. This is used during connection
 // initialization.
 type Handshaker interface {
-	Handshake(context.Context, addr.Addr, wiremessage.ReadWriter) (description.Server, error)
+	Handshake(context.Context, address.Address, wiremessage.ReadWriter) (description.Server, error)
 }
 
 // HandshakerFunc is an adapter to allow the use of ordinary functions as
 // connection handshakers.
-type HandshakerFunc func(context.Context, addr.Addr, wiremessage.ReadWriter) (description.Server, error)
+type HandshakerFunc func(context.Context, address.Address, wiremessage.ReadWriter) (description.Server, error)
 
 // Handshake implements the Handshaker interface.
-func (hf HandshakerFunc) Handshake(ctx context.Context, address addr.Addr, rw wiremessage.ReadWriter) (description.Server, error) {
+func (hf HandshakerFunc) Handshake(ctx context.Context, addr address.Address, rw wiremessage.ReadWriter) (description.Server, error) {
 	ctx, span := trace.StartSpan(ctx, "mongo-go/core/connection.(HandshakerFunc).Handshake")
 	defer span.End()
 
-	ds, err := hf(ctx, address, rw)
+	ds, err := hf(ctx, addr, rw)
 	if err != nil {
 		span.SetStatus(trace.Status{
 			Code:    int32(trace.StatusCodeInternal),
@@ -97,23 +98,29 @@ func (hf HandshakerFunc) Handshake(ctx context.Context, address addr.Addr, rw wi
 }
 
 type connection struct {
-	addr             addr.Addr
-	id               string
-	conn             net.Conn
+	addr        address.Address
+	id          string
+	conn        net.Conn
+	compressBuf []byte                // buffer to compress messages
+	compressor  compressor.Compressor // use for compressing messages
+	// server can compress response with any compressor supported by driver
+	compressorMap    map[wiremessage.CompressorID]compressor.Compressor
 	dead             bool
 	idleTimeout      time.Duration
 	idleDeadline     time.Time
 	lifetimeDeadline time.Time
 	readTimeout      time.Duration
+	uncompressBuf    []byte // buffer to uncompress messages
 	writeTimeout     time.Duration
 	readBuf          []byte
 	writeBuf         []byte
+	wireMessageBuf   []byte // buffer to store uncompressed wire message before compressing
 }
 
-// New opens a connection to a given Addr.
+// New opens a connection to a given Addr
 //
 // The server description returned is nil if there was no handshaker provided.
-func New(ctx context.Context, address addr.Addr, opts ...Option) (Connection, *description.Server, error) {
+func New(ctx context.Context, addr address.Address, opts ...Option) (Connection, *description.Server, error) {
 	ctx, span := trace.StartSpan(ctx, "mongo-go/core/connection.New")
 	defer span.End()
 
@@ -126,7 +133,7 @@ func New(ctx context.Context, address addr.Addr, opts ...Option) (Connection, *d
 	}
 
 	span.Annotatef(nil, "Invoking Config.Dialer.DialContext")
-	nc, err := cfg.dialer.DialContext(ctx, address.Network(), address.String())
+	nc, err := cfg.dialer.DialContext(ctx, addr.Network(), addr.String())
 	span.Annotatef(nil, "Finished invoking Config.Dialer.DialContext")
 	if err != nil {
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
@@ -136,7 +143,7 @@ func New(ctx context.Context, address addr.Addr, opts ...Option) (Connection, *d
 	if cfg.tlsConfig != nil {
 		span.Annotatef(nil, "Configuring TLS")
 		tlsConfig := cfg.tlsConfig.Clone()
-		nc, err = configureTLS(ctx, nc, address, tlsConfig)
+		nc, err = configureTLS(ctx, nc, addr, tlsConfig)
 		span.Annotatef(nil, "Finished configuring TLS")
 		if err != nil {
 			span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
@@ -149,18 +156,27 @@ func New(ctx context.Context, address addr.Addr, opts ...Option) (Connection, *d
 		lifetimeDeadline = time.Now().Add(cfg.lifeTimeout)
 	}
 
-	id := fmt.Sprintf("%s[-%d]", address, nextClientConnectionID())
+	id := fmt.Sprintf("%s[-%d]", addr, nextClientConnectionID())
+	compressorMap := make(map[wiremessage.CompressorID]compressor.Compressor)
+
+	for _, comp := range cfg.compressors {
+		compressorMap[comp.CompressorID()] = comp
+	}
 
 	c := &connection{
 		id:               id,
 		conn:             nc,
-		addr:             address,
+		compressBuf:      make([]byte, 256),
+		compressorMap:    compressorMap,
+		addr:             addr,
 		idleTimeout:      cfg.idleTimeout,
 		lifetimeDeadline: lifetimeDeadline,
 		readTimeout:      cfg.readTimeout,
 		writeTimeout:     cfg.writeTimeout,
 		readBuf:          make([]byte, 256),
+		uncompressBuf:    make([]byte, 256),
 		writeBuf:         make([]byte, 0, 256),
+		wireMessageBuf:   make([]byte, 256),
 	}
 
 	c.bumpIdleDeadline()
@@ -174,15 +190,33 @@ func New(ctx context.Context, address addr.Addr, opts ...Option) (Connection, *d
 			span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 			return nil, nil, err
 		}
+
+		if len(d.Compression) > 0 {
+		clientMethodLoop:
+			for _, comp := range cfg.compressors {
+				method := comp.Name()
+
+				for _, serverMethod := range d.Compression {
+					if method != serverMethod {
+						continue
+					}
+
+					c.compressor = comp // found matching compressor
+					break clientMethodLoop
+				}
+			}
+
+		}
+
 		desc = &d
 	}
 
 	return c, desc, nil
 }
 
-func configureTLS(ctx context.Context, nc net.Conn, address addr.Addr, config *TLSConfig) (net.Conn, error) {
+func configureTLS(ctx context.Context, nc net.Conn, addr address.Address, config *TLSConfig) (net.Conn, error) {
 	if !config.InsecureSkipVerify {
-		hostname := address.String()
+		hostname := addr.String()
 		colonPos := strings.LastIndex(hostname, ":")
 		if colonPos == -1 {
 			colonPos = len(hostname)
@@ -227,6 +261,106 @@ func (c *connection) Expired() bool {
 	return c.dead
 }
 
+func canCompress(cmd string) bool {
+	if cmd == "isMaster" || cmd == "saslStart" || cmd == "saslContinue" || cmd == "getnonce" || cmd == "authenticate" ||
+		cmd == "createUser" || cmd == "updateUser" || cmd == "copydbSaslStart" || cmd == "copydbgetnonce" || cmd == "copydb" {
+		return false
+	}
+	return true
+}
+
+func (c *connection) compressMessage(wm wiremessage.WireMessage) (wiremessage.WireMessage, error) {
+	var requestID int32
+	var responseTo int32
+	var origOpcode wiremessage.OpCode
+
+	switch wm.(type) {
+	case wiremessage.Query:
+		queryMsg := wm.(wiremessage.Query)
+		firstElem, err := queryMsg.Query.ElementAt(0)
+
+		if err != nil {
+			return wiremessage.Compressed{}, err
+		}
+
+		key := firstElem.Key()
+		if !canCompress(key) {
+			return wm, nil // return original message because this command can't be compressed
+		}
+		requestID = queryMsg.MsgHeader.RequestID
+		origOpcode = wiremessage.OpQuery
+		responseTo = queryMsg.MsgHeader.ResponseTo
+	}
+
+	// can compress
+	c.wireMessageBuf = c.wireMessageBuf[:0] // truncate
+	var err error
+	c.wireMessageBuf, err = wm.AppendWireMessage(c.wireMessageBuf)
+	if err != nil {
+		return wiremessage.Compressed{}, err
+	}
+
+	c.wireMessageBuf = c.wireMessageBuf[16:] // strip header
+	c.compressBuf = c.compressBuf[:0]
+	compressedBytes, err := c.compressor.CompressBytes(c.wireMessageBuf, c.compressBuf)
+	if err != nil {
+		return wiremessage.Compressed{}, err
+	}
+
+	compressedMessage := wiremessage.Compressed{
+		MsgHeader: wiremessage.Header{
+			// MessageLength and OpCode will be set when marshalling wire message by SetDefaults()
+			RequestID:  requestID,
+			ResponseTo: responseTo,
+		},
+		OriginalOpCode:    origOpcode,
+		UncompressedSize:  int32(len(c.wireMessageBuf)), // length of uncompressed message excluding MsgHeader
+		CompressorID:      wiremessage.CompressorID(c.compressor.CompressorID()),
+		CompressedMessage: compressedBytes,
+	}
+
+	return compressedMessage, nil
+}
+
+// returns []byte of uncompressed message with reconstructed header, original opcode, error
+func (c *connection) uncompressMessage(compressed wiremessage.Compressed) ([]byte, wiremessage.OpCode, error) {
+	// server doesn't guarantee the same compression method will be used each time so the CompressorID field must be
+	// used to find the correct method for uncompressing data
+	uncompressor := c.compressorMap[compressed.CompressorID]
+
+	// reset uncompressBuf
+	c.uncompressBuf = c.uncompressBuf[:0]
+	if int(compressed.UncompressedSize) > cap(c.uncompressBuf) {
+		c.uncompressBuf = make([]byte, 0, compressed.UncompressedSize)
+	}
+
+	uncompressedMessage, err := uncompressor.UncompressBytes(compressed.CompressedMessage, c.uncompressBuf)
+
+	if err != nil {
+		return nil, 0, err
+	}
+
+	switch compressed.OriginalOpCode {
+	case wiremessage.OpReply:
+		var fullMessage []byte
+
+		// reconstruct original header
+		origHeader := wiremessage.Header{
+			MessageLength: int32(len(uncompressedMessage)) + 16, // add 16 for original header
+			RequestID:     compressed.MsgHeader.RequestID,
+			ResponseTo:    compressed.MsgHeader.ResponseTo,
+			OpCode:        wiremessage.OpReply,
+		}
+
+		fullMessage = origHeader.AppendHeader(fullMessage)
+		fullMessage = append(fullMessage, uncompressedMessage...)
+		return fullMessage, origHeader.OpCode, nil
+
+	default:
+		return nil, 0, fmt.Errorf("opcode %s not implemented", compressed.OriginalOpCode)
+	}
+}
+
 func (c *connection) WriteWireMessage(ctx context.Context, wm wiremessage.WireMessage) error {
 	var err error
 	if c.dead {
@@ -266,7 +400,21 @@ func (c *connection) WriteWireMessage(ctx context.Context, wm wiremessage.WireMe
 	// Truncate the write buffer
 	c.writeBuf = c.writeBuf[:0]
 
-	c.writeBuf, err = wm.AppendWireMessage(c.writeBuf)
+	messageToWrite := wm
+	// Compress if possible
+	if c.compressor != nil {
+		compressed, err := c.compressMessage(wm)
+		if err != nil {
+			return Error{
+				ConnectionID: c.id,
+				Wrapped:      err,
+				message:      "unable to compress wire message",
+			}
+		}
+		messageToWrite = compressed
+	}
+
+	c.writeBuf, err = messageToWrite.AppendWireMessage(c.writeBuf)
 	if err != nil {
 		return Error{
 			ConnectionID: c.id,
@@ -368,6 +516,7 @@ func (c *connection) ReadWireMessage(ctx context.Context) (wiremessage.WireMessa
 	if err != nil {
 		ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "read"))
 		stats.Record(ctx, observability.MErrors.M(1))
+		c.Close()
 		return nil, Error{
 			ConnectionID: c.id,
 			Wrapped:      err,
@@ -392,11 +541,39 @@ func (c *connection) ReadWireMessage(ctx context.Context) (wiremessage.WireMessa
 	//      https://github.com/mongodb/mongo-go-driver/blob/de03a35e8661ae6df623f41ec8f616ffd8ef6131/core/wiremessage/header.go#L41-L51
 	n += 16
 
+	messageToDecode := c.readBuf
+	opcodeToCheck := hdr.OpCode
+
+	if hdr.OpCode == wiremessage.OpCompressed {
+		var compressed wiremessage.Compressed
+		err := compressed.UnmarshalWireMessage(c.readBuf)
+		if err != nil {
+			defer c.Close()
+			return nil, Error{
+				ConnectionID: c.id,
+				Wrapped:      err,
+				message:      "unable to decode OP_COMPRESSED",
+			}
+		}
+
+		uncompressed, origOpcode, err := c.uncompressMessage(compressed)
+		if err != nil {
+			defer c.Close()
+			return nil, Error{
+				ConnectionID: c.id,
+				Wrapped:      err,
+				message:      "unable to uncompress message",
+			}
+		}
+		messageToDecode = uncompressed
+		opcodeToCheck = origOpcode
+	}
+
 	var wm wiremessage.WireMessage
-	switch hdr.OpCode {
+	switch opcodeToCheck {
 	case wiremessage.OpReply:
 		var r wiremessage.Reply
-		err := r.UnmarshalWireMessage(c.readBuf)
+		err := r.UnmarshalWireMessage(messageToDecode)
 		if err != nil {
 			c.Close()
 			ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "unmarshal"))

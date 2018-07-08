@@ -120,6 +120,7 @@ functions:
            ${PREPARE_SHELL}
            # any go tools that we need
            go get -u github.com/golang/lint/golint
+           go get -u github.com/kisielk/errcheck
 
            # initialize submodules
            git submodule init
@@ -211,17 +212,9 @@ functions:
           done
 
 
-  install-dependencies:
-    type: test
-    params:
-      working_dir: src/github.com/mongodb/mongo-go-driver
-      script: |
-        ${PREPARE_SHELL}
-        file="${PROJECT_DIRECTORY}/.evergreen/install-dependencies.sh"
-        [ -f ${file} ] && sh ${file} || echo "${file} not available, skipping"
-
   run-make:
     - command: shell.exec
+      type: test
       params:
         working_dir: src/github.com/mongodb/mongo-go-driver
         script: |
@@ -245,7 +238,15 @@ functions:
               fi
           fi
 
-          AUTH=${AUTH} SSL=${SSL} MONGODB_URI="${MONGODB_URI}" TOPOLOGY=${TOPOLOGY} make evg-test
+          AUTH=${AUTH} SSL=${SSL} MONGODB_URI="${MONGODB_URI}" TOPOLOGY=${TOPOLOGY} MONGO_GO_DRIVER_COMPRESSOR=${MONGO_GO_DRIVER_COMPRESSOR} make evg-test
+
+
+  send-perf-data:
+   - command: json.send
+     params:
+       name: perf
+       file: src/github.com/mongodb/mongo-go-driver/perf.json
+
 
   run-enterprise-auth-tests:
     - command: shell.exec
@@ -261,7 +262,7 @@ functions:
             export GOPATH=$(dirname $(dirname $(dirname $(dirname `pwd`))))
           fi;
           export PATH="${GCC_PATH}:$PATH"
-          MONGODB_URI="${MONGODB_URI}" make -s evg-test-auth
+          MONGODB_URI="${MONGODB_URI}" MONGO_GO_DRIVER_COMPRESSOR="${MONGO_GO_DRIVER_COMPRESSOR}" make -s evg-test-auth
 
   run-enterprise-gssapi-auth-tests:
     - command: shell.exec
@@ -284,7 +285,7 @@ functions:
             export MONGODB_URI="${gssapi_auth_linux_mongodb_uri}"
           fi;
           export PATH="${GCC_PATH}:$PATH"
-          make -s evg-test-auth
+          MONGO_GO_DRIVER_COMPRESSOR="${MONGO_GO_DRIVER_COMPRESSOR}" make -s evg-test-auth
 
 pre:
   - func: fetch-source
@@ -292,12 +293,12 @@ pre:
   - func: windows-fix
   - func: fix-absolute-paths
   - func: make-files-executable
-  - func: install-dependencies
 
 post:
   - command: gotest.parse_files
     params:
-      files: ["src/github.com/mongodb/mongo-go-driver/test.suite"]
+      files:
+        - "src/github.com/mongodb/mongo-go-driver/*.suite"
   - func: upload-mo-artifacts
   - func: cleanup
 
@@ -308,6 +309,14 @@ tasks:
         - func: run-make
           vars:
             targets: check-fmt
+
+    - name: sa-errcheck
+      tags: ["static-analysis"]
+      commands:
+        - func: run-make
+          vars:
+            targets: errcheck
+
 
     - name: sa-lint
       tags: ["static-analysis"]
@@ -322,6 +331,20 @@ tasks:
         - func: run-make
           vars:
             targets: vet
+
+    - name: perf
+      tags: ["performance"]
+      exec_timeout_secs: 7200
+      commands:
+        - func: bootstrap-mongo-orchestration
+          vars:
+            TOPOLOGY: "server"
+            AUTH: "noauth"
+            SSL: "nossl"
+        - func: run-make
+          vars:
+            targets: driver-benchmark
+        - func: send-perf-data
 
     - name: sa-build-examples
       tags: ["static-analysis"]
@@ -344,6 +367,21 @@ tasks:
             AUTH: "noauth"
             SSL: "nossl"
 
+    - name: test-standalone-noauth-nossl-compression
+      tags: ["test", "standalone", "compression"]
+      commands:
+        - func: bootstrap-mongo-orchestration
+          vars:
+            TOPOLOGY: "server"
+            AUTH: "noauth"
+            SSL: "nossl"
+        - func: run-tests
+          vars:
+            TOPOLOGY: "server"
+            AUTH: "noauth"
+            SSL: "nossl"
+            MONGO_GO_DRIVER_COMPRESSOR: "snappy"
+
     - name: test-standalone-auth-ssl
       tags: ["test", "standalone"]
       commands:
@@ -357,6 +395,21 @@ tasks:
             TOPOLOGY: "server"
             AUTH: "auth"
             SSL: "ssl"
+
+    - name: test-standalone-auth-ssl-compression
+      tags: ["test", "standalone"]
+      commands:
+        - func: bootstrap-mongo-orchestration
+          vars:
+            topology: "server"
+            auth: "auth"
+            ssl: "ssl"
+        - func: run-tests
+          vars:
+            topology: "server"
+            auth: "auth"
+            ssl: "ssl"
+            MONGO_GO_DRIVER_COMPRESSOR: "snappy"
 
     - name: test-replicaset-noauth-nossl
       tags: ["test", "replicaset"]
@@ -372,6 +425,21 @@ tasks:
             AUTH: "noauth"
             SSL: "nossl"
 
+    - name: test-replicaset-noauth-nossl-compression
+      tags: ["test", "replicaset"]
+      commands:
+        - func: bootstrap-mongo-orchestration
+          vars:
+            TOPOLOGY: "replica_set"
+            AUTH: "noauth"
+            SSL: "nossl"
+        - func: run-tests
+          vars:
+            TOPOLOGY: "replica_set"
+            AUTH: "noauth"
+            SSL: "nossl"
+            MONGO_GO_DRIVER_COMPRESSOR: "snappy"
+
     - name: test-replicaset-auth-ssl
       tags: ["test", "replicaset"]
       commands:
@@ -385,6 +453,21 @@ tasks:
             TOPOLOGY: "replica_set"
             AUTH: "auth"
             SSL: "ssl"
+
+    - name: test-replicaset-auth-ssl-compression
+      tags: ["test", "replicaset"]
+      commands:
+        - func: bootstrap-mongo-orchestration
+          vars:
+            TOPOLOGY: "replica_set"
+            AUTH: "auth"
+            SSL: "ssl"
+        - func: run-tests
+          vars:
+            TOPOLOGY: "replica_set"
+            AUTH: "auth"
+            SSL: "ssl"
+            MONGO_GO_DRIVER_COMPRESSOR: "snappy"
 
     - name: test-sharded-noauth-nossl
       tags: ["test", "sharded"]
@@ -400,6 +483,21 @@ tasks:
             AUTH: "noauth"
             SSL: "nossl"
 
+    - name: test-sharded-noauth-nossl-compression
+      tags: ["test", "sharded"]
+      commands:
+        - func: bootstrap-mongo-orchestration
+          vars:
+            TOPOLOGY: "sharded_cluster"
+            AUTH: "noauth"
+            SSL: "nossl"
+        - func: run-tests
+          vars:
+            TOPOLOGY: "sharded_cluster"
+            AUTH: "noauth"
+            SSL: "nossl"
+            MONGO_GO_DRIVER_COMPRESSOR: "snappy"
+
     - name: test-sharded-auth-ssl
       tags: ["test", "sharded"]
       commands:
@@ -414,6 +512,21 @@ tasks:
             AUTH: "auth"
             SSL: "ssl"
 
+    - name: test-sharded-auth-ssl-compression
+      tags: ["test", "sharded"]
+      commands:
+        - func: bootstrap-mongo-orchestration
+          vars:
+            TOPOLOGY: "sharded_cluster"
+            AUTH: "auth"
+            SSL: "ssl"
+        - func: run-tests
+          vars:
+            TOPOLOGY: "sharded_cluster"
+            AUTH: "auth"
+            SSL: "ssl"
+            MONGO_GO_DRIVER_COMPRESSOR: "snappy"
+
     - name: test-enterprise-auth-plain
       tags: ["test", "enterprise-auth"]
       commands:
@@ -421,10 +534,20 @@ tasks:
           vars:
             MONGODB_URI: "${plain_auth_mongodb_uri}"
 
+    - name: test-enterprise-auth-plain-compression
+      tags: ["test", "enterprise-auth"]
+      commands:
+        - func: run-enterprise-auth-tests
+          vars:
+            MONGODB_URI: "${plain_auth_mongodb_uri}"
+            MONGO_GO_DRIVER_COMPRESSOR: "snappy"
+
     - name: test-enterprise-auth-gssapi
       tags: ["test", "enterprise-auth"]
       commands:
         - func: run-enterprise-gssapi-auth-tests
+          vars:
+            MONGO_GO_DRIVER_COMPRESSOR: "snappy"
 
     - name: go1.8-build
       tags: ["compile-check"]
@@ -462,6 +585,10 @@ axes:
   - id: version
     display_name: MongoDB Version
     values:
+      - id: "4.0"
+        display_name: "4.0"
+        variables:
+           VERSION: "4.0"
       - id: "3.6"
         display_name: "3.6"
         variables:
@@ -510,6 +637,15 @@ buildvariants:
     GO_DIST: "/opt/golang/go1.9"
   tasks:
     - name: ".static-analysis"
+
+- name: perf
+  display_name: "Performance"
+  run_on:
+    - ubuntu1604-build
+  expansions:
+    GO_DIST: "/opt/golang/go1.9"
+  tasks:
+    - name: ".performance"
 
 - name: build-check
   display_name: "Compile Only Checks"

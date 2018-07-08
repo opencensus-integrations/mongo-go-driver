@@ -16,8 +16,8 @@ import (
 	"time"
 
 	"github.com/mongodb/mongo-go-driver/bson"
-	"github.com/mongodb/mongo-go-driver/core/options"
 	"github.com/mongodb/mongo-go-driver/core/writeconcern"
+	"github.com/mongodb/mongo-go-driver/mongo/indexopt"
 	"github.com/stretchr/testify/require"
 )
 
@@ -67,18 +67,18 @@ func TestIndexView_List(t *testing.T) {
 	cursor, err := indexView.List(context.Background())
 	require.NoError(t, err)
 
-	found := false
-	var index = index{}
+	var found bool
+	var idx index
 
 	for cursor.Next(context.Background()) {
-		err := cursor.Decode(&index)
+		err := cursor.Decode(&idx)
 		require.NoError(t, err)
 
-		require.Equal(t, expectedNS, index.NS)
+		require.Equal(t, expectedNS, idx.NS)
 
-		if index.Name == "_id_" {
-			require.Len(t, index.Key, 1)
-			require.Equal(t, 1, index.Key["_id"])
+		if idx.Name == "_id_" {
+			require.Len(t, idx.Key, 1)
+			require.Equal(t, 1, idx.Key["_id"])
 			found = true
 		}
 	}
@@ -110,23 +110,158 @@ func TestIndexView_CreateOne(t *testing.T) {
 	cursor, err := indexView.List(context.Background())
 	require.NoError(t, err)
 
-	found := false
-	var index = index{}
+	var found bool
+	var idx index
 
 	for cursor.Next(context.Background()) {
-		err := cursor.Decode(&index)
+		err := cursor.Decode(&idx)
 		require.NoError(t, err)
 
-		require.Equal(t, expectedNS, index.NS)
+		require.Equal(t, expectedNS, idx.NS)
 
-		if index.Name == indexName {
-			require.Len(t, index.Key, 1)
-			require.Equal(t, -1, index.Key["foo"])
+		if idx.Name == indexName {
+			require.Len(t, idx.Key, 1)
+			require.Equal(t, -1, idx.Key["foo"])
 			found = true
 		}
 	}
 	require.NoError(t, cursor.Err())
 	require.True(t, found)
+}
+
+func TestIndexView_CreateOneWithNameOption(t *testing.T) {
+	t.Parallel()
+
+	if testing.Short() {
+		t.Skip()
+	}
+
+	dbName, coll := getIndexableCollection(t)
+	expectedNS := fmt.Sprintf("IndexView.%s", dbName)
+	indexView := coll.Indexes()
+
+	indexName, err := indexView.CreateOne(
+		context.Background(),
+		IndexModel{
+			Keys: bson.NewDocument(
+				bson.EC.Int32("foo", -1),
+			),
+			Options: NewIndexOptionsBuilder().Name("testname").Build(),
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, "testname", indexName)
+
+	cursor, err := indexView.List(context.Background())
+	require.NoError(t, err)
+
+	var found bool
+	var idx index
+
+	for cursor.Next(context.Background()) {
+		err := cursor.Decode(&idx)
+		require.NoError(t, err)
+
+		require.Equal(t, expectedNS, idx.NS)
+
+		if idx.Name == indexName {
+			require.Len(t, idx.Key, 1)
+			require.Equal(t, -1, idx.Key["foo"])
+			found = true
+		}
+	}
+	require.NoError(t, cursor.Err())
+	require.True(t, found)
+}
+
+// Omits collation option because it's incompatible with version option
+func TestIndexView_CreateOneWithAllOptions(t *testing.T) {
+	t.Parallel()
+
+	if testing.Short() {
+		t.Skip()
+	}
+
+	_, coll := getIndexableCollection(t)
+	indexView := coll.Indexes()
+
+	_, err := indexView.CreateOne(
+		context.Background(),
+		IndexModel{
+			Keys: bson.NewDocument(
+				bson.EC.String("foo", "text"),
+			),
+			Options: NewIndexOptionsBuilder().
+				Background(false).
+				ExpireAfterSeconds(10).
+				Name("a").
+				Sparse(false).
+				Unique(false).
+				Version(1).
+				DefaultLanguage("english").
+				LanguageOverride("english").
+				TextVersion(1).
+				Weights(bson.NewDocument()).
+				SphereVersion(1).
+				Bits(32).
+				Max(10).
+				Min(1).
+				BucketSize(1).
+				PartialFilterExpression(bson.NewDocument()).
+				StorageEngine(bson.NewDocument(
+					bson.EC.SubDocument("wiredTiger", bson.NewDocument(
+						bson.EC.String("configString", "block_compressor=zlib"),
+					)),
+				)).
+				Build(),
+		},
+	)
+	require.NoError(t, err)
+}
+
+func TestIndexView_CreateOneWithCollationOption(t *testing.T) {
+	t.Parallel()
+
+	if testing.Short() {
+		t.Skip()
+	}
+
+	_, coll := getIndexableCollection(t)
+	indexView := coll.Indexes()
+
+	_, err := indexView.CreateOne(
+		context.Background(),
+		IndexModel{
+			Keys: bson.NewDocument(
+				bson.EC.String("bar", "text"),
+			),
+			Options: NewIndexOptionsBuilder().
+				Collation(bson.NewDocument(
+					bson.EC.String("locale", "simple"),
+				)).
+				Build(),
+		},
+	)
+	require.NoError(t, err)
+}
+
+func TestIndexView_CreateOneWithNilKeys(t *testing.T) {
+	t.Parallel()
+
+	if testing.Short() {
+		t.Skip()
+	}
+
+	_, coll := getIndexableCollection(t)
+	indexView := coll.Indexes()
+
+	_, err := indexView.CreateOne(
+		context.Background(),
+		IndexModel{
+			Keys: nil,
+		},
+	)
+	require.Error(t, err)
 }
 
 func TestIndexView_CreateMany(t *testing.T) {
@@ -142,17 +277,18 @@ func TestIndexView_CreateMany(t *testing.T) {
 
 	indexNames, err := indexView.CreateMany(
 		context.Background(),
-		[]options.CreateIndexesOptioner{},
-		IndexModel{
-			Keys: bson.NewDocument(
-				bson.EC.Int32("foo", -1),
-			),
-		},
-		IndexModel{
-			Keys: bson.NewDocument(
-				bson.EC.Int32("bar", 1),
-				bson.EC.Int32("baz", -1),
-			),
+		[]IndexModel{
+			{
+				Keys: bson.NewDocument(
+					bson.EC.Int32("foo", -1),
+				),
+			},
+			{
+				Keys: bson.NewDocument(
+					bson.EC.Int32("bar", 1),
+					bson.EC.Int32("baz", -1),
+				),
+			},
 		},
 	)
 	require.NoError(t, err)
@@ -167,24 +303,24 @@ func TestIndexView_CreateMany(t *testing.T) {
 
 	fooFound := false
 	barBazFound := false
-	var index = index{}
+	var idx index
 
 	for cursor.Next(context.Background()) {
-		err := cursor.Decode(&index)
+		err := cursor.Decode(&idx)
 		require.NoError(t, err)
 
-		require.Equal(t, expectedNS, index.NS)
+		require.Equal(t, expectedNS, idx.NS)
 
-		if index.Name == fooName {
-			require.Len(t, index.Key, 1)
-			require.Equal(t, -1, index.Key["foo"])
+		if idx.Name == fooName {
+			require.Len(t, idx.Key, 1)
+			require.Equal(t, -1, idx.Key["foo"])
 			fooFound = true
 		}
 
-		if index.Name == barBazName {
-			require.Len(t, index.Key, 2)
-			require.Equal(t, 1, index.Key["bar"])
-			require.Equal(t, -1, index.Key["baz"])
+		if idx.Name == barBazName {
+			require.Len(t, idx.Key, 2)
+			require.Equal(t, 1, idx.Key["bar"])
+			require.Equal(t, -1, idx.Key["baz"])
 			barBazFound = true
 		}
 	}
@@ -206,17 +342,18 @@ func TestIndexView_DropOne(t *testing.T) {
 
 	indexNames, err := indexView.CreateMany(
 		context.Background(),
-		[]options.CreateIndexesOptioner{},
-		IndexModel{
-			Keys: bson.NewDocument(
-				bson.EC.Int32("foo", -1),
-			),
-		},
-		IndexModel{
-			Keys: bson.NewDocument(
-				bson.EC.Int32("bar", 1),
-				bson.EC.Int32("baz", -1),
-			),
+		[]IndexModel{
+			{
+				Keys: bson.NewDocument(
+					bson.EC.Int32("foo", -1),
+				),
+			},
+			{
+				Keys: bson.NewDocument(
+					bson.EC.Int32("bar", 1),
+					bson.EC.Int32("baz", -1),
+				),
+			},
 		},
 	)
 	require.NoError(t, err)
@@ -232,14 +369,14 @@ func TestIndexView_DropOne(t *testing.T) {
 	cursor, err := indexView.List(context.Background())
 	require.NoError(t, err)
 
-	var index = index{}
+	var idx index
 
 	for cursor.Next(context.Background()) {
-		err := cursor.Decode(&index)
+		err := cursor.Decode(&idx)
 		require.NoError(t, err)
 
-		require.Equal(t, expectedNS, index.NS)
-		require.NotEqual(t, indexNames[1], index.Name)
+		require.Equal(t, expectedNS, idx.NS)
+		require.NotEqual(t, indexNames[1], idx.Name)
 	}
 	require.NoError(t, cursor.Err())
 }
@@ -257,17 +394,18 @@ func TestIndexView_DropAll(t *testing.T) {
 
 	indexNames, err := indexView.CreateMany(
 		context.Background(),
-		[]options.CreateIndexesOptioner{},
-		IndexModel{
-			Keys: bson.NewDocument(
-				bson.EC.Int32("foo", -1),
-			),
-		},
-		IndexModel{
-			Keys: bson.NewDocument(
-				bson.EC.Int32("bar", 1),
-				bson.EC.Int32("baz", -1),
-			),
+		[]IndexModel{
+			{
+				Keys: bson.NewDocument(
+					bson.EC.Int32("foo", -1),
+				),
+			},
+			{
+				Keys: bson.NewDocument(
+					bson.EC.Int32("bar", 1),
+					bson.EC.Int32("baz", -1),
+				),
+			},
 		},
 	)
 	require.NoError(t, err)
@@ -282,15 +420,15 @@ func TestIndexView_DropAll(t *testing.T) {
 	cursor, err := indexView.List(context.Background())
 	require.NoError(t, err)
 
-	var index = index{}
+	var idx index
 
 	for cursor.Next(context.Background()) {
-		err := cursor.Decode(&index)
+		err := cursor.Decode(&idx)
 		require.NoError(t, err)
 
-		require.Equal(t, expectedNS, index.NS)
-		require.NotEqual(t, indexNames[0], index.Name)
-		require.NotEqual(t, indexNames[1], index.Name)
+		require.Equal(t, expectedNS, idx.NS)
+		require.NotEqual(t, indexNames[0], idx.Name)
+		require.NotEqual(t, indexNames[1], idx.Name)
 	}
 	require.NoError(t, cursor.Err())
 }
@@ -305,26 +443,28 @@ func TestIndexView_CreateIndexesOptioner(t *testing.T) {
 	dbName, coll := getIndexableCollection(t)
 	expectedNS := fmt.Sprintf("IndexView.%s", dbName)
 	indexView := coll.Indexes()
-	var opts []options.CreateIndexesOptioner
+
+	var opts []indexopt.Create
 	wc := writeconcern.New(writeconcern.W(1))
-	elem, err := wc.MarshalBSONElement()
-	require.NoError(t, err)
-	optwc := options.OptWriteConcern{WriteConcern: elem, Acknowledged: wc.Acknowledged()}
+	optwc := indexopt.WriteConcern(wc)
 	opts = append(opts, optwc)
+
 	indexNames, err := indexView.CreateMany(
 		context.Background(),
-		opts,
-		IndexModel{
-			Keys: bson.NewDocument(
-				bson.EC.Int32("foo", -1),
-			),
+		[]IndexModel{
+			{
+				Keys: bson.NewDocument(
+					bson.EC.Int32("foo", -1),
+				),
+			},
+			{
+				Keys: bson.NewDocument(
+					bson.EC.Int32("bar", 1),
+					bson.EC.Int32("baz", -1),
+				),
+			},
 		},
-		IndexModel{
-			Keys: bson.NewDocument(
-				bson.EC.Int32("bar", 1),
-				bson.EC.Int32("baz", -1),
-			),
-		},
+		opts...,
 	)
 	require.NoError(t, err)
 	require.NoError(t, err)
@@ -339,24 +479,24 @@ func TestIndexView_CreateIndexesOptioner(t *testing.T) {
 
 	fooFound := false
 	barBazFound := false
-	var index = index{}
+	var idx index
 
 	for cursor.Next(context.Background()) {
-		err := cursor.Decode(&index)
+		err := cursor.Decode(&idx)
 		require.NoError(t, err)
 
-		require.Equal(t, expectedNS, index.NS)
+		require.Equal(t, expectedNS, idx.NS)
 
-		if index.Name == fooName {
-			require.Len(t, index.Key, 1)
-			require.Equal(t, -1, index.Key["foo"])
+		if idx.Name == fooName {
+			require.Len(t, idx.Key, 1)
+			require.Equal(t, -1, idx.Key["foo"])
 			fooFound = true
 		}
 
-		if index.Name == barBazName {
-			require.Len(t, index.Key, 2)
-			require.Equal(t, 1, index.Key["bar"])
-			require.Equal(t, -1, index.Key["baz"])
+		if idx.Name == barBazName {
+			require.Len(t, idx.Key, 2)
+			require.Equal(t, 1, idx.Key["bar"])
+			require.Equal(t, -1, idx.Key["baz"])
 			barBazFound = true
 		}
 	}
@@ -379,25 +519,26 @@ func TestIndexView_DropIndexesOptioner(t *testing.T) {
 	dbName, coll := getIndexableCollection(t)
 	expectedNS := fmt.Sprintf("IndexView.%s", dbName)
 	indexView := coll.Indexes()
-	var opts []options.DropIndexesOptioner
+
+	var opts []indexopt.Drop
 	wc := writeconcern.New(writeconcern.W(1))
-	elem, err := wc.MarshalBSONElement()
-	require.NoError(t, err)
-	optwc := options.OptWriteConcern{WriteConcern: elem, Acknowledged: wc.Acknowledged()}
+	optwc := indexopt.WriteConcern(wc)
 	opts = append(opts, optwc)
+
 	indexNames, err := indexView.CreateMany(
 		context.Background(),
-		[]options.CreateIndexesOptioner{},
-		IndexModel{
-			Keys: bson.NewDocument(
-				bson.EC.Int32("foo", -1),
-			),
-		},
-		IndexModel{
-			Keys: bson.NewDocument(
-				bson.EC.Int32("bar", 1),
-				bson.EC.Int32("baz", -1),
-			),
+		[]IndexModel{
+			{
+				Keys: bson.NewDocument(
+					bson.EC.Int32("foo", -1),
+				),
+			},
+			{
+				Keys: bson.NewDocument(
+					bson.EC.Int32("bar", 1),
+					bson.EC.Int32("baz", -1),
+				),
+			},
 		},
 	)
 	require.NoError(t, err)
@@ -413,14 +554,14 @@ func TestIndexView_DropIndexesOptioner(t *testing.T) {
 	cursor, err := indexView.List(context.Background())
 	require.NoError(t, err)
 
-	var index = index{}
+	var idx index
 
 	for cursor.Next(context.Background()) {
-		err := cursor.Decode(&index)
+		err := cursor.Decode(&idx)
 		require.NoError(t, err)
-		require.Equal(t, expectedNS, index.NS)
-		require.NotEqual(t, indexNames[0], index.Name)
-		require.NotEqual(t, indexNames[1], index.Name)
+		require.Equal(t, expectedNS, idx.NS)
+		require.NotEqual(t, indexNames[0], idx.Name)
+		require.NotEqual(t, indexNames[1], idx.Name)
 	}
 	require.NoError(t, cursor.Err())
 }

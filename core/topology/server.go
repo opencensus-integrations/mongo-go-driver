@@ -15,12 +15,12 @@ import (
 	"time"
 
 	"github.com/mongodb/mongo-go-driver/bson"
-	"github.com/mongodb/mongo-go-driver/core/addr"
+	"github.com/mongodb/mongo-go-driver/core/address"
+	"github.com/mongodb/mongo-go-driver/core/auth"
 	"github.com/mongodb/mongo-go-driver/core/command"
 	"github.com/mongodb/mongo-go-driver/core/connection"
 	"github.com/mongodb/mongo-go-driver/core/description"
-	"github.com/mongodb/mongo-go-driver/core/options"
-	"github.com/mongodb/mongo-go-driver/core/result"
+	"github.com/mongodb/mongo-go-driver/core/option"
 
 	"go.opencensus.io/trace"
 )
@@ -64,7 +64,7 @@ const (
 // Server is a single server within a topology.
 type Server struct {
 	cfg     *serverConfig
-	address addr.Addr
+	address address.Address
 
 	connectionstate int32
 	done            chan struct{}
@@ -85,8 +85,8 @@ type Server struct {
 
 // ConnectServer creates a new Server and then initializes it using the
 // Connect method.
-func ConnectServer(ctx context.Context, address addr.Addr, opts ...ServerOption) (*Server, error) {
-	srvr, err := NewServer(address, opts...)
+func ConnectServer(ctx context.Context, addr address.Address, opts ...ServerOption) (*Server, error) {
+	srvr, err := NewServer(addr, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -99,7 +99,7 @@ func ConnectServer(ctx context.Context, address addr.Addr, opts ...ServerOption)
 
 // NewServer creates a new server. The mongodb server at the address will be monitored
 // on an internal monitoring goroutine.
-func NewServer(address addr.Addr, opts ...ServerOption) (*Server, error) {
+func NewServer(addr address.Address, opts ...ServerOption) (*Server, error) {
 	cfg, err := newServerConfig(opts...)
 	if err != nil {
 		return nil, err
@@ -107,14 +107,14 @@ func NewServer(address addr.Addr, opts ...ServerOption) (*Server, error) {
 
 	s := &Server{
 		cfg:     cfg,
-		address: address,
+		address: addr,
 
 		done:     make(chan struct{}),
 		checkNow: make(chan struct{}, 1),
 
 		subscribers: make(map[uint64]chan description.Server),
 	}
-	s.desc.Store(description.Server{Addr: address})
+	s.desc.Store(description.Server{Addr: addr})
 
 	var maxConns uint64
 	if cfg.maxConns == 0 {
@@ -123,7 +123,7 @@ func NewServer(address addr.Addr, opts ...ServerOption) (*Server, error) {
 		maxConns = uint64(cfg.maxConns)
 	}
 
-	s.pool, err = connection.NewPool(address, uint64(cfg.maxIdleConns), maxConns, cfg.connectionOpts...)
+	s.pool, err = connection.NewPool(addr, uint64(cfg.maxIdleConns), maxConns, cfg.connectionOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -183,6 +183,10 @@ func (s *Server) Connection(ctx context.Context) (connection.Connection, error) 
 	conn, desc, err := s.pool.Get(ctx)
 	span.Annotatef(nil, "Finished s.pool.Get")
 	if err != nil {
+		if _, ok := err.(*auth.Error); ok {
+			// authentication error --> drain connection
+			_ = s.pool.Drain()
+		}
 		return nil, err
 	}
 	if desc != nil {
@@ -376,7 +380,9 @@ func (s *Server) heartbeat(conn connection.Connection) (description.Server, conn
 		}
 
 		now := time.Now()
-		isMaster, err := (&command.IsMaster{}).RoundTrip(ctx, conn)
+
+		isMasterCmd := &command.IsMaster{Compressors: s.cfg.compressionOpts}
+		isMaster, err := isMasterCmd.RoundTrip(ctx, conn)
 		if err != nil {
 			saved = err
 			conn.Close()
@@ -385,7 +391,7 @@ func (s *Server) heartbeat(conn connection.Connection) (description.Server, conn
 		}
 		delay := time.Since(now)
 
-		desc = description.NewServer(s.address, isMaster, result.BuildInfo{}).SetAverageRTT(s.updateAverageRTT(delay))
+		desc = description.NewServer(s.address, isMaster).SetAverageRTT(s.updateAverageRTT(delay))
 		desc.HeartbeatInterval = s.cfg.heartbeatInterval
 		set = true
 
@@ -421,7 +427,7 @@ func (s *Server) updateAverageRTT(delay time.Duration) time.Duration {
 func (s *Server) Drain() error { return s.pool.Drain() }
 
 // BuildCursor implements the command.CursorBuilder interface for the Server type.
-func (s *Server) BuildCursor(result bson.Reader, opts ...options.CursorOptioner) (command.Cursor, error) {
+func (s *Server) BuildCursor(result bson.Reader, opts ...option.CursorOptioner) (command.Cursor, error) {
 	return newCursor(result, s, opts...)
 }
 

@@ -97,7 +97,7 @@ func ConductSaslConversation(ctx context.Context, desc description.Server, rw wi
 		ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "unmarshal"))
 		stats.Record(ctx, observability.MErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
-		return err
+		return newAuthError("unmarshall error", err)
 	}
 
 	cid := saslResp.ConversationID
@@ -150,7 +150,7 @@ func ConductSaslConversation(ctx context.Context, desc description.Server, rw wi
 			ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "unmarshal"))
 			stats.Record(ctx, observability.MErrors.M(1))
 			span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
-			return err
+			return newAuthError("unmarshal error", err)
 		}
 	}
 }

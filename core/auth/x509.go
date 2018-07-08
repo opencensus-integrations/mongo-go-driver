@@ -43,7 +43,7 @@ func (a *MongoDBX509Authenticator) Auth(ctx context.Context, desc description.Se
 		bson.EC.String("mechanism", MongoDBX509),
 	)
 
-	if !desc.Version.AtLeast(3, 4) {
+	if desc.WireVersion.Max < 5 {
 		authRequestDoc.Append(bson.EC.String("user", a.User))
 	}
 
@@ -59,7 +59,7 @@ func (a *MongoDBX509Authenticator) Auth(ctx context.Context, desc description.Se
 			Code:    int32(trace.StatusCodeInternal),
 			Message: err.Error(),
 		})
-		return err
+		return newAuthError("round trip error", err)
 	}
 
 	return nil

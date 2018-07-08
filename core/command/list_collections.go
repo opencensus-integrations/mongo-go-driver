@@ -11,7 +11,8 @@ import (
 
 	"github.com/mongodb/mongo-go-driver/bson"
 	"github.com/mongodb/mongo-go-driver/core/description"
-	"github.com/mongodb/mongo-go-driver/core/options"
+	"github.com/mongodb/mongo-go-driver/core/option"
+	"github.com/mongodb/mongo-go-driver/core/readpref"
 	"github.com/mongodb/mongo-go-driver/core/wiremessage"
 )
 
@@ -21,10 +22,11 @@ import (
 type ListCollections struct {
 	DB     string
 	Filter *bson.Document
-	Opts   []options.ListCollectionsOptioner
+	Opts   []option.ListCollectionsOptioner
 
-	result Cursor
-	err    error
+	result   Cursor
+	ReadPref *readpref.ReadPref
+	err      error
 }
 
 // Encode will encode this command into a wire message for the given server description.
@@ -45,7 +47,7 @@ func (lc *ListCollections) Encode(desc description.SelectedServer) (wiremessage.
 		}
 	}
 
-	return (&Command{DB: lc.DB, Command: cmd, isWrite: true}).Encode(desc)
+	return (&Command{DB: lc.DB, Command: cmd, isWrite: true, ReadPref: lc.ReadPref}).Encode(desc)
 }
 
 // Decode will decode the wire message using the provided server description. Errors during decoding
@@ -57,9 +59,9 @@ func (lc *ListCollections) Decode(desc description.SelectedServer, cb CursorBuil
 		return lc
 	}
 
-	opts := make([]options.CursorOptioner, 0)
+	opts := make([]option.CursorOptioner, 0)
 	for _, opt := range lc.Opts {
-		curOpt, ok := opt.(options.CursorOptioner)
+		curOpt, ok := opt.(option.CursorOptioner)
 		if !ok {
 			continue
 		}

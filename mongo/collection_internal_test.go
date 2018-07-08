@@ -14,13 +14,25 @@ import (
 
 	"github.com/mongodb/mongo-go-driver/bson"
 	"github.com/mongodb/mongo-go-driver/bson/objectid"
-	"github.com/mongodb/mongo-go-driver/core/options"
+	"github.com/mongodb/mongo-go-driver/core/readconcern"
+	"github.com/mongodb/mongo-go-driver/core/readpref"
 	"github.com/mongodb/mongo-go-driver/core/writeconcern"
 	"github.com/mongodb/mongo-go-driver/internal/testutil"
+	"github.com/mongodb/mongo-go-driver/mongo/aggregateopt"
+	"github.com/mongodb/mongo-go-driver/mongo/collectionopt"
+	"github.com/mongodb/mongo-go-driver/mongo/countopt"
+	"github.com/mongodb/mongo-go-driver/mongo/deleteopt"
+	"github.com/mongodb/mongo-go-driver/mongo/distinctopt"
+	"github.com/mongodb/mongo-go-driver/mongo/findopt"
+	"github.com/mongodb/mongo-go-driver/mongo/insertopt"
+	"github.com/mongodb/mongo-go-driver/mongo/mongoopt"
+	"github.com/mongodb/mongo-go-driver/mongo/replaceopt"
+	"github.com/mongodb/mongo-go-driver/mongo/updateopt"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func createTestCollection(t *testing.T, dbName *string, collName *string) *Collection {
+func createTestCollection(t *testing.T, dbName *string, collName *string, opts ...collectionopt.Option) *Collection {
 	if collName == nil {
 		coll := testutil.ColName(t)
 		collName = &coll
@@ -28,7 +40,7 @@ func createTestCollection(t *testing.T, dbName *string, collName *string) *Colle
 
 	db := createTestDatabase(t, dbName)
 
-	return db.Collection(*collName)
+	return db.Collection(*collName, opts...)
 }
 
 func initCollection(t *testing.T, coll *Collection) {
@@ -65,6 +77,73 @@ func TestCollection_initialize(t *testing.T) {
 	coll := createTestCollection(t, &dbName, &collName)
 	require.Equal(t, coll.name, collName)
 	require.NotNil(t, coll.db)
+}
+
+func compareColls(t *testing.T, expected *Collection, got *Collection) {
+	switch {
+	case expected.readPreference != got.readPreference:
+		t.Errorf("expected read preference %#v. got %#v", expected.readPreference, got.readPreference)
+	case expected.readConcern != got.readConcern:
+		t.Errorf("expected read concern %#v. got %#v", expected.readConcern, got.readConcern)
+	case expected.writeConcern != got.writeConcern:
+		t.Errorf("expected write concern %#v. got %#v", expected.writeConcern, got.writeConcern)
+	}
+}
+
+func TestCollection_Options(t *testing.T) {
+	name := "testDb_options"
+	rpPrimary := readpref.Primary()
+	rpSecondary := readpref.Secondary()
+	wc1 := writeconcern.New(writeconcern.W(5))
+	wc2 := writeconcern.New(writeconcern.W(10))
+	rcLocal := readconcern.Local()
+	rcMajority := readconcern.Majority()
+
+	opts := []collectionopt.Option{collectionopt.ReadPreference(rpPrimary), collectionopt.ReadConcern(rcLocal), collectionopt.WriteConcern(wc1),
+		collectionopt.ReadPreference(rpSecondary), collectionopt.ReadConcern(rcMajority), collectionopt.WriteConcern(wc2)}
+
+	dbName := "collection_internal_test_db1"
+
+	expectedColl := &Collection{
+		readConcern:    rcMajority,
+		readPreference: rpSecondary,
+		writeConcern:   wc2,
+	}
+
+	t.Run("IndividualOptions", func(t *testing.T) {
+		// if options specified multiple times, last instance should take precedence
+		coll := createTestCollection(t, &dbName, &name, opts...)
+		compareColls(t, expectedColl, coll)
+	})
+
+	t.Run("Bundle", func(t *testing.T) {
+		coll := createTestCollection(t, &dbName, &name, collectionopt.BundleCollection(opts...))
+		compareColls(t, expectedColl, coll)
+	})
+}
+
+func TestCollection_InheritOptions(t *testing.T) {
+	name := "testDb_options_inherit"
+	client := createTestClient(t)
+
+	rpPrimary := readpref.Primary()
+	rcLocal := readconcern.Local()
+	wc1 := writeconcern.New(writeconcern.W(10))
+
+	db := client.Database("collection_internal_test_db2")
+	db.readPreference = rpPrimary
+	db.readConcern = rcLocal
+	coll := db.Collection(name, collectionopt.WriteConcern(wc1))
+
+	// coll should inherit read preference and read concern from client
+	switch {
+	case coll.readPreference != rpPrimary:
+		t.Errorf("expected read preference primary. got %#v", coll.readPreference)
+	case coll.readConcern != rcLocal:
+		t.Errorf("expected read concern local. got %#v", coll.readConcern)
+	case coll.writeConcern != wc1:
+		t.Errorf("expected write concern %#v. got %#v", wc1, coll.writeConcern)
+	}
 }
 
 func TestCollection_namespace(t *testing.T) {
@@ -131,7 +210,7 @@ func TestCollection_InsertOne_WriteError(t *testing.T) {
 		t.FailNow()
 	}
 	if got[0].Code != want.Code {
-		t.Errorf("Did not recieve the correct error code. got %d; want %d", got[0].Code, want.Code)
+		t.Errorf("Did not receive the correct error code. got %d; want %d", got[0].Code, want.Code)
 	}
 
 }
@@ -149,15 +228,14 @@ func TestCollection_InsertOne_WriteConcernError(t *testing.T) {
 	doc := bson.NewDocument(bson.EC.ObjectID("_id", objectid.New()))
 	coll := createTestCollection(t, nil, nil)
 
-	optwc, err := Opt.WriteConcern(writeconcern.New(writeconcern.W(25)))
-	require.NoError(t, err)
-	_, err = coll.InsertOne(context.Background(), doc, optwc)
+	optwc := insertopt.WriteConcern(writeconcern.New(writeconcern.W(25)))
+	_, err := coll.InsertOne(context.Background(), doc, optwc)
 	got, ok := err.(WriteConcernError)
 	if !ok {
 		t.Errorf("Did not receive correct type of error. got %T; want %T", err, WriteConcernError{})
 	}
 	if got.Code != want.Code {
-		t.Errorf("Did not recieve the correct error code. got %d; want %d", got.Code, want.Code)
+		t.Errorf("Did not receive the correct error code. got %d; want %d", got.Code, want.Code)
 	}
 	if got.Message != want.Message {
 		t.Errorf("Did not receive the correct error message. got %s; want %s", got.Message, want.Message)
@@ -187,10 +265,50 @@ func TestCollection_InsertMany(t *testing.T) {
 	require.Equal(t, result.InsertedIDs[0], want1)
 	require.NotNil(t, result.InsertedIDs[1])
 	require.Equal(t, result.InsertedIDs[2], want2)
-
 }
 
-func TestCollection_InsertMany_WriteError(t *testing.T) {
+func TestCollection_InsertMany_Batches(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	// TODO(GODRIVER-425): remove this as part a larger project to
+	// refactor integration and other longrunning tasks.
+	if os.Getenv("EVR_TASK_ID") == "" {
+		t.Skip("skipping long running integration test outside of evergreen")
+	}
+
+	t.Parallel()
+
+	const (
+		megabyte = 10 * 10 * 10 * 10 * 10 * 10
+		numDocs  = 700000
+	)
+
+	docs := []interface{}{}
+	total := uint32(0)
+	expectedDocSize := uint32(26)
+	for i := 0; i < numDocs; i++ {
+		d := bson.NewDocument(
+			bson.EC.Int32("a", int32(i)),
+			bson.EC.Int32("b", int32(i*2)),
+			bson.EC.Int32("c", int32(i*3)),
+		)
+		len, err := d.Validate()
+		require.NoError(t, err)
+		require.Equal(t, expectedDocSize, len, "len=%d expected=%d", len, expectedDocSize)
+		docs = append(docs, d)
+		total += len
+	}
+	assert.True(t, total > 16*megabyte)
+	coll := createTestCollection(t, nil, nil)
+
+	result, err := coll.InsertMany(context.Background(), docs)
+	require.Nil(t, err)
+	require.Len(t, result.InsertedIDs, numDocs)
+}
+
+func TestCollection_InsertMany_ErrorCases(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
@@ -205,20 +323,71 @@ func TestCollection_InsertMany_WriteError(t *testing.T) {
 	}
 	coll := createTestCollection(t, nil, nil)
 
-	_, err := coll.InsertMany(context.Background(), docs)
-	require.NoError(t, err)
-	_, err = coll.InsertMany(context.Background(), docs)
-	got, ok := err.(BulkWriteError)
-	if !ok {
-		t.Errorf("Did not receive correct type of error. got %T; want %T", err, WriteErrors{})
-	}
-	if len(got.WriteErrors) != 1 {
-		t.Errorf("Incorrect number of errors receieved. got %d; want %d", len(got.WriteErrors), 1)
-		t.FailNow()
-	}
-	if got.WriteErrors[0].Code != want.Code {
-		t.Errorf("Did not recieve the correct error code. got %d; want %d", got.WriteErrors[0].Code, want.Code)
-	}
+	t.Run("insert_batch_unordered", func(t *testing.T) {
+		_, err := coll.InsertMany(context.Background(), docs)
+		require.NoError(t, err)
+
+		// without option ordered
+		_, err = coll.InsertMany(context.Background(), docs, insertopt.Ordered(false))
+		got, ok := err.(BulkWriteError)
+		if !ok {
+			t.Errorf("Did not receive correct type of error. got %T; want %T", err, WriteErrors{})
+			t.FailNow()
+		}
+		if len(got.WriteErrors) != 3 {
+			t.Errorf("Incorrect number of errors receieved. got %d; want %d", len(got.WriteErrors), 3)
+			t.FailNow()
+		}
+		if got.WriteErrors[0].Code != want.Code {
+			t.Errorf("Did not receive the correct error code. got %d; want %d", got.WriteErrors[0].Code, want.Code)
+		}
+	})
+	t.Run("insert_batch_ordered_write_error", func(t *testing.T) {
+		// run the insert again to ensure that the documents
+		// are there in cases when this case is run
+		// independently of the previous test
+		_, _ = coll.InsertMany(context.Background(), docs)
+
+		// with the ordered option (default, we should only get one write error)
+		_, err := coll.InsertMany(context.Background(), docs)
+		got, ok := err.(BulkWriteError)
+		if !ok {
+			t.Errorf("Did not receive correct type of error. got %T; want %T", err, WriteErrors{})
+			t.FailNow()
+		}
+		if len(got.WriteErrors) != 1 {
+			t.Errorf("Incorrect number of errors receieved. got %d; want %d", len(got.WriteErrors), 1)
+			t.FailNow()
+		}
+		if got.WriteErrors[0].Code != want.Code {
+			t.Errorf("Did not receive the correct error code. got %d; want %d", got.WriteErrors[0].Code, want.Code)
+		}
+
+	})
+	t.Run("insert_batch_write_concern_error", func(t *testing.T) {
+		if os.Getenv("TOPOLOGY") != "replica_set" {
+			t.Skip()
+		}
+
+		docs = []interface{}{
+			bson.NewDocument(bson.EC.ObjectID("_id", objectid.New())),
+			bson.NewDocument(bson.EC.ObjectID("_id", objectid.New())),
+			bson.NewDocument(bson.EC.ObjectID("_id", objectid.New())),
+		}
+
+		optwc := insertopt.WriteConcern(writeconcern.New(writeconcern.W(42)))
+		_, err := coll.InsertMany(context.Background(), docs, optwc)
+		if err == nil {
+			t.Errorf("write concern error not propagated from command: %+v", err)
+		}
+		bulkErr, ok := err.(BulkWriteError)
+		if !ok {
+			t.Errorf("incorrect error type returned: %T", err)
+		}
+		if bulkErr.WriteConcernError == nil {
+			t.Errorf("write concern error is nil: %+v", bulkErr)
+		}
+	})
 }
 
 func TestCollection_InsertMany_WriteConcernError(t *testing.T) {
@@ -238,15 +407,14 @@ func TestCollection_InsertMany_WriteConcernError(t *testing.T) {
 	}
 	coll := createTestCollection(t, nil, nil)
 
-	optwc, err := Opt.WriteConcern(writeconcern.New(writeconcern.W(25)))
-	require.NoError(t, err)
-	_, err = coll.InsertMany(context.Background(), docs, optwc)
+	optwc := insertopt.WriteConcern(writeconcern.New(writeconcern.W(25)))
+	_, err := coll.InsertMany(context.Background(), docs, optwc)
 	got, ok := err.(BulkWriteError)
 	if !ok {
 		t.Errorf("Did not receive correct type of error. got %T; want %T\nError message: %s", err, BulkWriteError{}, err)
 	}
 	if got.WriteConcernError.Code != want.Code {
-		t.Errorf("Did not recieve the correct error code. got %d; want %d", got.WriteConcernError.Code, want.Code)
+		t.Errorf("Did not receive the correct error code. got %d; want %d", got.WriteConcernError.Code, want.Code)
 	}
 	if got.WriteConcernError.Message != want.Message {
 		t.Errorf("Did not receive the correct error message. got %s; want %s", got.WriteConcernError.Message, want.Message)
@@ -297,7 +465,11 @@ func TestCollection_DeleteOne_notFound_withOption(t *testing.T) {
 	initCollection(t, coll)
 
 	filter := bson.NewDocument(bson.EC.Int32("x", 0))
-	result, err := coll.DeleteOne(context.Background(), filter, Opt.Collation(&options.Collation{Locale: "en_US"}))
+
+	collationOpt := &mongoopt.Collation{
+		Locale: "en_US",
+	}
+	result, err := coll.DeleteOne(context.Background(), filter, deleteopt.Collation(collationOpt))
 	require.Nil(t, err)
 	require.Equal(t, result.DeletedCount, int64(0))
 }
@@ -333,7 +505,7 @@ func TestCollection_DeleteOne_WriteError(t *testing.T) {
 		t.FailNow()
 	}
 	if got[0].Code != want.Code {
-		t.Errorf("Did not recieve the correct error code. got %d; want %d", got[0].Code, want.Code)
+		t.Errorf("Did not receive the correct error code. got %d; want %d", got[0].Code, want.Code)
 	}
 }
 
@@ -350,15 +522,14 @@ func TestCollection_DeleteMany_WriteConcernError(t *testing.T) {
 	filter := bson.NewDocument(bson.EC.Int32("x", 1))
 	coll := createTestCollection(t, nil, nil)
 
-	optwc, err := Opt.WriteConcern(writeconcern.New(writeconcern.W(25)))
-	require.NoError(t, err)
-	_, err = coll.DeleteOne(context.Background(), filter, optwc)
+	optwc := deleteopt.WriteConcern(writeconcern.New(writeconcern.W(25)))
+	_, err := coll.DeleteOne(context.Background(), filter, optwc)
 	got, ok := err.(WriteConcernError)
 	if !ok {
 		t.Errorf("Did not receive correct type of error. got %T; want %T", err, WriteConcernError{})
 	}
 	if got.Code != want.Code {
-		t.Errorf("Did not recieve the correct error code. got %d; want %d", got.Code, want.Code)
+		t.Errorf("Did not receive the correct error code. got %d; want %d", got.Code, want.Code)
 	}
 	if got.Message != want.Message {
 		t.Errorf("Did not receive the correct error message. got %s; want %s", got.Message, want.Message)
@@ -414,7 +585,7 @@ func TestCollection_DeleteMany_notFound_withOption(t *testing.T) {
 	filter := bson.NewDocument(
 		bson.EC.SubDocumentFromElements("x", bson.EC.Int32("$lt", 1)))
 
-	result, err := coll.DeleteMany(context.Background(), filter, Opt.Collation(&options.Collation{Locale: "en_US"}))
+	result, err := coll.DeleteMany(context.Background(), filter, deleteopt.Collation(&mongoopt.Collation{Locale: "en_US"}))
 	require.Nil(t, err)
 	require.Equal(t, result.DeletedCount, int64(0))
 }
@@ -450,7 +621,7 @@ func TestCollection_DeleteMany_WriteError(t *testing.T) {
 		t.FailNow()
 	}
 	if got[0].Code != want.Code {
-		t.Errorf("Did not recieve the correct error code. got %d; want %d", got[0].Code, want.Code)
+		t.Errorf("Did not receive the correct error code. got %d; want %d", got[0].Code, want.Code)
 	}
 }
 
@@ -467,15 +638,14 @@ func TestCollection_DeleteOne_WriteConcernError(t *testing.T) {
 	filter := bson.NewDocument(bson.EC.Int32("x", 1))
 	coll := createTestCollection(t, nil, nil)
 
-	optwc, err := Opt.WriteConcern(writeconcern.New(writeconcern.W(25)))
-	require.NoError(t, err)
-	_, err = coll.DeleteMany(context.Background(), filter, optwc)
+	optwc := deleteopt.WriteConcern(writeconcern.New(writeconcern.W(25)))
+	_, err := coll.DeleteMany(context.Background(), filter, optwc)
 	got, ok := err.(WriteConcernError)
 	if !ok {
 		t.Errorf("Did not receive correct type of error. got %T; want %T", err, WriteConcernError{})
 	}
 	if got.Code != want.Code {
-		t.Errorf("Did not recieve the correct error code. got %d; want %d", got.Code, want.Code)
+		t.Errorf("Did not receive the correct error code. got %d; want %d", got.Code, want.Code)
 	}
 	if got.Message != want.Message {
 		t.Errorf("Did not receive the correct error message. got %s; want %s", got.Message, want.Message)
@@ -539,7 +709,7 @@ func TestCollection_UpdateOne_upsert(t *testing.T) {
 	update := bson.NewDocument(
 		bson.EC.SubDocumentFromElements("$inc", bson.EC.Int32("x", 1)))
 
-	result, err := coll.UpdateOne(context.Background(), filter, update, Opt.Upsert(true))
+	result, err := coll.UpdateOne(context.Background(), filter, update, updateopt.Upsert(true))
 	require.Nil(t, err)
 	require.Equal(t, result.MatchedCount, int64(0))
 	require.Equal(t, result.ModifiedCount, int64(0))
@@ -576,7 +746,7 @@ func TestCollection_UpdateOne_WriteError(t *testing.T) {
 		t.FailNow()
 	}
 	if got[0].Code != want.Code {
-		t.Errorf("Did not recieve the correct error code. got %d; want %d", got[0].Code, want.Code)
+		t.Errorf("Did not receive the correct error code. got %d; want %d", got[0].Code, want.Code)
 	}
 }
 
@@ -599,15 +769,14 @@ func TestCollection_UpdateOne_WriteConcernError(t *testing.T) {
 	)
 	coll := createTestCollection(t, nil, nil)
 
-	optwc, err := Opt.WriteConcern(writeconcern.New(writeconcern.W(25)))
-	require.NoError(t, err)
-	_, err = coll.UpdateOne(context.Background(), filter, update, optwc)
+	optwc := updateopt.WriteConcern(writeconcern.New(writeconcern.W(25)))
+	_, err := coll.UpdateOne(context.Background(), filter, update, optwc)
 	got, ok := err.(WriteConcernError)
 	if !ok {
 		t.Errorf("Did not receive correct type of error. got %T; want %T", err, WriteConcernError{})
 	}
 	if got.Code != want.Code {
-		t.Errorf("Did not recieve the correct error code. got %d; want %d", got.Code, want.Code)
+		t.Errorf("Did not receive the correct error code. got %d; want %d", got.Code, want.Code)
 	}
 	if got.Message != want.Message {
 		t.Errorf("Did not receive the correct error message. got %s; want %s", got.Message, want.Message)
@@ -676,7 +845,7 @@ func TestCollection_UpdateMany_upsert(t *testing.T) {
 	update := bson.NewDocument(
 		bson.EC.SubDocumentFromElements("$inc", bson.EC.Int32("x", 1)))
 
-	result, err := coll.UpdateMany(context.Background(), filter, update, Opt.Upsert(true))
+	result, err := coll.UpdateMany(context.Background(), filter, update, updateopt.Upsert(true))
 	require.Nil(t, err)
 	require.Equal(t, result.MatchedCount, int64(0))
 	require.Equal(t, result.ModifiedCount, int64(0))
@@ -713,7 +882,7 @@ func TestCollection_UpdateMany_WriteError(t *testing.T) {
 		t.FailNow()
 	}
 	if got[0].Code != want.Code {
-		t.Errorf("Did not recieve the correct error code. got %d; want %d", got[0].Code, want.Code)
+		t.Errorf("Did not receive the correct error code. got %d; want %d", got[0].Code, want.Code)
 	}
 
 }
@@ -737,15 +906,14 @@ func TestCollection_UpdateMany_WriteConcernError(t *testing.T) {
 	)
 	coll := createTestCollection(t, nil, nil)
 
-	optwc, err := Opt.WriteConcern(writeconcern.New(writeconcern.W(25)))
-	require.NoError(t, err)
-	_, err = coll.UpdateMany(context.Background(), filter, update, optwc)
+	optwc := updateopt.WriteConcern(writeconcern.New(writeconcern.W(25)))
+	_, err := coll.UpdateMany(context.Background(), filter, update, optwc)
 	got, ok := err.(WriteConcernError)
 	if !ok {
 		t.Errorf("Did not receive correct type of error. got %T; want %T", err, WriteConcernError{})
 	}
 	if got.Code != want.Code {
-		t.Errorf("Did not recieve the correct error code. got %d; want %d", got.Code, want.Code)
+		t.Errorf("Did not receive the correct error code. got %d; want %d", got.Code, want.Code)
 	}
 	if got.Message != want.Message {
 		t.Errorf("Did not receive the correct error message. got %s; want %s", got.Message, want.Message)
@@ -806,7 +974,7 @@ func TestCollection_ReplaceOne_upsert(t *testing.T) {
 	filter := bson.NewDocument(bson.EC.Int32("x", 0))
 	replacement := bson.NewDocument(bson.EC.Int32("y", 1))
 
-	result, err := coll.ReplaceOne(context.Background(), filter, replacement, Opt.Upsert(true))
+	result, err := coll.ReplaceOne(context.Background(), filter, replacement, replaceopt.Upsert(true))
 	require.Nil(t, err)
 	require.Equal(t, result.MatchedCount, int64(0))
 	require.Equal(t, result.ModifiedCount, int64(0))
@@ -840,7 +1008,7 @@ func TestCollection_ReplaceOne_WriteError(t *testing.T) {
 	case 66: // mongod v3.6
 	case 16837: //mongod v3.4, mongod v3.2
 	default:
-		t.Errorf("Did not recieve the correct error code. got %d; want (one of) %d", got[0].Code, []int{66, 16837})
+		t.Errorf("Did not receive the correct error code. got %d; want (one of) %d", got[0].Code, []int{66, 16837})
 		fmt.Printf("%#v\n", got)
 	}
 }
@@ -859,15 +1027,14 @@ func TestCollection_ReplaceOne_WriteConcernError(t *testing.T) {
 	update := bson.NewDocument(bson.EC.Double("pi", 3.14159))
 	coll := createTestCollection(t, nil, nil)
 
-	optwc, err := Opt.WriteConcern(writeconcern.New(writeconcern.W(25)))
-	require.NoError(t, err)
-	_, err = coll.ReplaceOne(context.Background(), filter, update, optwc)
+	optwc := replaceopt.WriteConcern(writeconcern.New(writeconcern.W(25)))
+	_, err := coll.ReplaceOne(context.Background(), filter, update, optwc)
 	got, ok := err.(WriteConcernError)
 	if !ok {
 		t.Errorf("Did not receive correct type of error. got %T; want %T", err, WriteConcernError{})
 	}
 	if got.Code != want.Code {
-		t.Errorf("Did not recieve the correct error code. got %d; want %d", got.Code, want.Code)
+		t.Errorf("Did not receive the correct error code. got %d; want %d", got.Code, want.Code)
 	}
 	if got.Message != want.Message {
 		t.Errorf("Did not receive the correct error message. got %s; want %s", got.Message, want.Message)
@@ -908,7 +1075,7 @@ func TestCollection_Aggregate(t *testing.T) {
 			),
 		))
 
-	cursor, err := coll.Aggregate(context.Background(), pipeline)
+	cursor, err := coll.Aggregate(context.Background(), pipeline, aggregateopt.BundleAggregate())
 	require.Nil(t, err)
 
 	for i := 2; i < 5; i++ {
@@ -918,25 +1085,30 @@ func TestCollection_Aggregate(t *testing.T) {
 		require.NoError(t, err)
 
 		require.Equal(t, doc.Len(), 1)
-		num, err := doc.Lookup("x")
+		num, err := doc.LookupErr("x")
 		require.NoError(t, err)
-		if num.Value().Type() != bson.TypeInt32 {
-			t.Errorf("Incorrect type for x. Got %s, but wanted Int32", num.Value().Type())
+		if num.Type() != bson.TypeInt32 {
+			t.Errorf("Incorrect type for x. Got %s, but wanted Int32", num.Type())
 			t.FailNow()
 		}
-		require.Equal(t, int(num.Value().Int32()), i)
+		require.Equal(t, int(num.Int32()), i)
 	}
 }
 
-func TestCollection_Aggregate_withOptions(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test in short mode")
-	}
-
-	t.Parallel()
-
+func testAggregateWithOptions(t *testing.T, createIndex bool, opts aggregateopt.Aggregate) error {
 	coll := createTestCollection(t, nil, nil)
 	initCollection(t, coll)
+
+	if createIndex {
+		indexView := coll.Indexes()
+		_, err := indexView.CreateOne(context.Background(), IndexModel{
+			Keys: bson.NewDocument(bson.EC.Int32("x", 1)),
+		})
+
+		if err != nil {
+			return err
+		}
+	}
 
 	pipeline := bson.NewArray(
 		bson.VC.DocumentFromElements(
@@ -962,24 +1134,64 @@ func TestCollection_Aggregate_withOptions(t *testing.T) {
 			),
 		))
 
-	cursor, err := coll.Aggregate(context.Background(), pipeline, Opt.AllowDiskUse(true))
-	require.Nil(t, err)
+	cursor, err := coll.Aggregate(context.Background(), pipeline, opts)
+	if err != nil {
+		return err
+	}
 
 	for i := 2; i < 5; i++ {
 		var doc = bson.NewDocument()
 		cursor.Next(context.Background())
 		err = cursor.Decode(doc)
-		require.NoError(t, err)
-
-		require.Equal(t, doc.Len(), 1)
-		num, err := doc.Lookup("x")
-		require.NoError(t, err)
-		if num.Value().Type() != bson.TypeInt32 {
-			t.Errorf("Incorrect type for x. Got %s, but wanted Int32", num.Value().Type())
-			t.FailNow()
+		if err != nil {
+			return err
 		}
-		require.Equal(t, int(num.Value().Int32()), i)
+
+		if doc.Len() != 1 {
+			return fmt.Errorf("got doc len %d, expected 1", doc.Len())
+		}
+
+		num, err := doc.LookupErr("x")
+		if err != nil {
+			return err
+		}
+
+		if num.Type() != bson.TypeInt32 {
+			return fmt.Errorf("incorrect type for x. got %s, wanted Int32", num.Type())
+		}
+
+		if int(num.Int32()) != i {
+			return fmt.Errorf("unexpected value returned. got %d, expected %d", int(num.Int32()), i)
+		}
 	}
+
+	return nil
+}
+
+func TestCollection_Aggregate_IndexHint(t *testing.T) {
+	skipIfBelow36(t)
+
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	t.Parallel()
+
+	hint := aggregateopt.Hint(bson.NewDocument(bson.EC.Int32("x", 1)))
+
+	err := testAggregateWithOptions(t, true, hint)
+	require.NoError(t, err)
+}
+
+func TestCollection_Aggregate_withOptions(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	t.Parallel()
+
+	err := testAggregateWithOptions(t, false, aggregateopt.AllowDiskUse(true))
+	require.NoError(t, err)
 }
 
 func TestCollection_Count(t *testing.T) {
@@ -1025,7 +1237,7 @@ func TestCollection_Count_withOption(t *testing.T) {
 	coll := createTestCollection(t, nil, nil)
 	initCollection(t, coll)
 
-	count, err := coll.Count(context.Background(), nil, Opt.Limit(3))
+	count, err := coll.Count(context.Background(), nil, countopt.Limit(3))
 	require.Nil(t, err)
 	require.Equal(t, count, int64(3))
 }
@@ -1073,7 +1285,7 @@ func TestCollection_Distinct_withOption(t *testing.T) {
 	coll := createTestCollection(t, nil, nil)
 	initCollection(t, coll)
 
-	results, err := coll.Distinct(context.Background(), "x", nil, Opt.Collation(&options.Collation{Locale: "en_US"}))
+	results, err := coll.Distinct(context.Background(), "x", nil, distinctopt.Collation(&mongoopt.Collation{Locale: "en_US"}))
 	require.Nil(t, err)
 	require.Equal(t, results, []interface{}{int32(1), int32(2), int32(3), int32(4), int32(5)})
 }
@@ -1088,11 +1300,9 @@ func TestCollection_Find_found(t *testing.T) {
 	coll := createTestCollection(t, nil, nil)
 	initCollection(t, coll)
 
-	sort, err := Opt.Sort(bson.NewDocument(bson.EC.Int32("x", 1)))
-	require.NoError(t, err)
 	cursor, err := coll.Find(context.Background(),
 		nil,
-		sort,
+		findopt.Sort(bson.NewDocument(bson.EC.Int32("x", 1))),
 	)
 	require.Nil(t, err)
 
@@ -1153,16 +1363,16 @@ func TestCollection_FindOne_found(t *testing.T) {
 	require.Nil(t, err)
 	require.Equal(t, result.Len(), 2)
 
-	_, err = result.Lookup("_id")
+	_, err = result.LookupErr("_id")
 	require.NoError(t, err)
 
-	num, err := result.Lookup("x")
+	num, err := result.LookupErr("x")
 	require.NoError(t, err)
-	if num.Value().Type() != bson.TypeInt32 {
-		t.Errorf("Incorrect type for x. Got %s, but wanted Int32", num.Value().Type())
+	if num.Type() != bson.TypeInt32 {
+		t.Errorf("Incorrect type for x. Got %s, but wanted Int32", num.Type())
 		t.FailNow()
 	}
-	require.Equal(t, int(num.Value().Int32()), 1)
+	require.Equal(t, int(num.Int32()), 1)
 }
 
 func TestCollection_FindOne_found_withOption(t *testing.T) {
@@ -1179,21 +1389,21 @@ func TestCollection_FindOne_found_withOption(t *testing.T) {
 	var result = bson.NewDocument()
 	err := coll.FindOne(context.Background(),
 		filter,
-		Opt.Comment("here's a query for ya"),
+		findopt.Comment("here's a query for ya"),
 	).Decode(result)
 	require.Nil(t, err)
 	require.Equal(t, result.Len(), 2)
 
-	_, err = result.Lookup("_id")
+	_, err = result.LookupErr("_id")
 	require.NoError(t, err)
 
-	num, err := result.Lookup("x")
+	num, err := result.LookupErr("x")
 	require.NoError(t, err)
-	if num.Value().Type() != bson.TypeInt32 {
-		t.Errorf("Incorrect type for x. Got %s, but wanted Int32", num.Value().Type())
+	if num.Type() != bson.TypeInt32 {
+		t.Errorf("Incorrect type for x. Got %s, but wanted Int32", num.Type())
 		t.FailNow()
 	}
-	require.Equal(t, int(num.Value().Int32()), 1)
+	require.Equal(t, int(num.Int32()), 1)
 }
 
 func TestCollection_FindOne_notFound(t *testing.T) {
@@ -1227,10 +1437,10 @@ func TestCollection_FindOneAndDelete_found(t *testing.T) {
 	err := coll.FindOneAndDelete(context.Background(), filter).Decode(result)
 	require.NoError(t, err)
 
-	elem, err := result.Lookup("x")
+	elem, err := result.LookupErr("x")
 	require.NoError(t, err)
-	require.Equal(t, elem.Value().Type(), bson.TypeInt32, "Incorrect BSON Element type")
-	require.Equal(t, int(elem.Value().Int32()), 3)
+	require.Equal(t, elem.Type(), bson.TypeInt32, "Incorrect BSON Element type")
+	require.Equal(t, int(elem.Int32()), 3)
 }
 
 func TestCollection_FindOneAndDelete_found_ignoreResult(t *testing.T) {
@@ -1298,10 +1508,10 @@ func TestCollection_FindOneAndReplace_found(t *testing.T) {
 	err := coll.FindOneAndReplace(context.Background(), filter, replacement).Decode(result)
 	require.NoError(t, err)
 
-	elem, err := result.Lookup("x")
+	elem, err := result.LookupErr("x")
 	require.NoError(t, err)
-	require.Equal(t, elem.Value().Type(), bson.TypeInt32, "Incorrect BSON Element type")
-	require.Equal(t, int(elem.Value().Int32()), 3)
+	require.Equal(t, elem.Type(), bson.TypeInt32, "Incorrect BSON Element type")
+	require.Equal(t, int(elem.Int32()), 3)
 }
 
 func TestCollection_FindOneAndReplace_found_ignoreResult(t *testing.T) {
@@ -1373,10 +1583,10 @@ func TestCollection_FindOneAndUpdate_found(t *testing.T) {
 	err := coll.FindOneAndUpdate(context.Background(), filter, update).Decode(result)
 	require.NoError(t, err)
 
-	elem, err := result.Lookup("x")
+	elem, err := result.LookupErr("x")
 	require.NoError(t, err)
-	require.Equal(t, elem.Value().Type(), bson.TypeInt32, "Incorrect BSON Element type")
-	require.Equal(t, int(elem.Value().Int32()), 3)
+	require.Equal(t, elem.Type(), bson.TypeInt32, "Incorrect BSON Element type")
+	require.Equal(t, int(elem.Int32()), 3)
 }
 
 func TestCollection_FindOneAndUpdate_found_ignoreResult(t *testing.T) {

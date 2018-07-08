@@ -13,7 +13,8 @@ import (
 
 	"github.com/mongodb/mongo-go-driver/bson"
 	"github.com/mongodb/mongo-go-driver/core/command"
-	"github.com/mongodb/mongo-go-driver/core/options"
+	"github.com/mongodb/mongo-go-driver/core/option"
+	"github.com/mongodb/mongo-go-driver/mongo/changestreamopt"
 
 	"go.opencensus.io/trace"
 )
@@ -24,7 +25,7 @@ var ErrMissingResumeToken = errors.New("cannot provide resume functionality when
 
 type changeStream struct {
 	pipeline    *bson.Array
-	options     []options.ChangeStreamOptioner
+	options     []option.ChangeStreamOptioner
 	coll        *Collection
 	cursor      Cursor
 	resumeToken *bson.Document
@@ -35,7 +36,7 @@ const errorCodeNotMaster int32 = 10107
 const errorCodeCursorNotFound int32 = 43
 
 func newChangeStream(ctx context.Context, coll *Collection, pipeline interface{},
-	opts ...options.ChangeStreamOptioner) (*changeStream, error) {
+	opts ...changestreamopt.ChangeStream) (*changeStream, error) {
 
 	ctx, span := trace.StartSpan(ctx, "mongo-go/mongo.newChangeStream")
 	defer span.End()
@@ -48,9 +49,14 @@ func newChangeStream(ctx context.Context, coll *Collection, pipeline interface{}
 		return nil, err
 	}
 
+	csOpts, err := changestreamopt.BundleChangeStream(opts...).Unbundle(true)
+	if err != nil {
+		return nil, err
+	}
+
 	changeStreamOptions := bson.NewDocument()
 
-	for _, opt := range opts {
+	for _, opt := range csOpts {
 		err = opt.Option(changeStreamOptions)
 		if err != nil {
 			return nil, err
@@ -72,7 +78,7 @@ func newChangeStream(ctx context.Context, coll *Collection, pipeline interface{}
 
 	cs := &changeStream{
 		pipeline: pipelineArr,
-		options:  opts,
+		options:  csOpts,
 		coll:     coll,
 		cursor:   cursor,
 	}
@@ -106,11 +112,11 @@ func (cs *changeStream) Next(ctx context.Context) bool {
 		}
 	}
 
-	resumeToken := Opt.ResumeAfter(cs.resumeToken)
+	resumeToken := changestreamopt.ResumeAfter(cs.resumeToken).ConvertChangeStreamOption()
 	found := false
 
 	for i, opt := range cs.options {
-		if _, ok := opt.(options.OptResumeAfter); ok {
+		if _, ok := opt.(option.OptResumeAfter); ok {
 			cs.options[i] = resumeToken
 			found = true
 			break

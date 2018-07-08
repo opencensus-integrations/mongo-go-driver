@@ -11,7 +11,7 @@ import (
 
 	"github.com/mongodb/mongo-go-driver/core/command"
 	"github.com/mongodb/mongo-go-driver/core/description"
-	"github.com/mongodb/mongo-go-driver/core/options"
+	"github.com/mongodb/mongo-go-driver/core/option"
 	"github.com/mongodb/mongo-go-driver/core/topology"
 	"github.com/mongodb/mongo-go-driver/core/writeconcern"
 
@@ -52,29 +52,10 @@ func Aggregate(
 			return nil, err
 		}
 		if wc != nil {
-			span.Annotatef(nil, "Invoking WriteConcern.MarshalBSONElement")
-			elem, err := wc.MarshalBSONElement()
-			span.Annotatef(nil, "Finished invoking WriteConcern.MarshalBSONElement")
-			if err != nil {
-				ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "marshal_bson_element"))
-				stats.Record(ctx, observability.MErrors.M(1))
-				span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
-				return nil, err
-			}
-
-			opt := options.OptWriteConcern{WriteConcern: elem, Acknowledged: wc.Acknowledged()}
+			opt := option.OptWriteConcern{WriteConcern: wc}
 			cmd.Opts = append(cmd.Opts, opt)
+			acknowledged = wc.Acknowledged()
 		}
-
-		for _, opt := range cmd.Opts {
-			wc, ok := opt.(options.OptWriteConcern)
-			if !ok {
-				continue
-			}
-			acknowledged = wc.Acknowledged
-			break
-		}
-
 	case false:
 		span.Annotatef(nil, "Invoking topology.SelectServer")
 		ss, err = topo.SelectServer(ctx, readSelector)

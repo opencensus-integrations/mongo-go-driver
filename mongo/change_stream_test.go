@@ -8,7 +8,7 @@ import (
 
 	"github.com/mongodb/mongo-go-driver/bson"
 	"github.com/mongodb/mongo-go-driver/core/command"
-	"github.com/mongodb/mongo-go-driver/core/options"
+	"github.com/mongodb/mongo-go-driver/core/option"
 	"github.com/stretchr/testify/require"
 )
 
@@ -59,7 +59,7 @@ func TestChangeStream_firstStage(t *testing.T) {
 	doc := elem.MutableDocument()
 	require.Equal(t, 1, doc.Len())
 
-	_, err = doc.Lookup("$changeStream")
+	_, err = doc.LookupErr("$changeStream")
 	require.NoError(t, err)
 }
 
@@ -121,10 +121,10 @@ func TestChangeStream_trackResumeToken(t *testing.T) {
 		err := changes.Decode(doc)
 		require.NoError(t, err)
 
-		id, err := doc.Lookup("_id")
+		id, err := doc.LookupErr("_id")
 		require.NoError(t, err)
 
-		require.Equal(t, id.Value().MutableDocument(), changes.(*changeStream).resumeToken)
+		require.Equal(t, id.MutableDocument(), changes.(*changeStream).resumeToken)
 	}
 }
 
@@ -198,7 +198,7 @@ func TestChangeStream_resumableError(t *testing.T) {
 	hasResume := false
 
 	for _, opt := range changes.(*changeStream).options {
-		if _, ok := opt.(options.OptResumeAfter); ok {
+		if _, ok := opt.(option.OptResumeAfter); ok {
 			hasResume = true
 			break
 		}

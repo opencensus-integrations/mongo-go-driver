@@ -10,7 +10,7 @@ import (
 	"github.com/mongodb/mongo-go-driver/bson"
 	"github.com/mongodb/mongo-go-driver/core/command"
 	"github.com/mongodb/mongo-go-driver/core/dispatch"
-	"github.com/mongodb/mongo-go-driver/core/options"
+	"github.com/mongodb/mongo-go-driver/mongo/indexopt"
 
 	"github.com/mongodb/mongo-go-driver/internal/observability"
 	"go.opencensus.io/stats"
@@ -39,7 +39,7 @@ type IndexModel struct {
 }
 
 // List returns a cursor iterating over all the indexes in the collection.
-func (iv IndexView) List(ctx context.Context) (Cursor, error) {
+func (iv IndexView) List(ctx context.Context, opts ...indexopt.List) (Cursor, error) {
 	ctx, _ = tag.New(ctx, tag.Insert(observability.KeyMethod, "indexview_list"))
 	ctx, span := trace.StartSpan(ctx, "mongo-go/mongo.(IndexView).List")
 	startTime := time.Now()
@@ -48,7 +48,12 @@ func (iv IndexView) List(ctx context.Context) (Cursor, error) {
 		span.End()
 	}()
 
-	listCmd := command.ListIndexes{NS: iv.coll.namespace()}
+	listOpts, err := indexopt.BundleList(opts...).Unbundle(true)
+	if err != nil {
+		return nil, err
+	}
+
+	listCmd := command.ListIndexes{NS: iv.coll.namespace(), Opts: listOpts}
 
 	cur, err := dispatch.ListIndexes(ctx, listCmd, iv.coll.client.topology, iv.coll.writeSelector)
 	if err != nil {
@@ -60,7 +65,7 @@ func (iv IndexView) List(ctx context.Context) (Cursor, error) {
 }
 
 // CreateOne creates a single index in the collection specified by the model.
-func (iv IndexView) CreateOne(ctx context.Context, model IndexModel, opts ...options.CreateIndexesOptioner) (string, error) {
+func (iv IndexView) CreateOne(ctx context.Context, model IndexModel, opts ...indexopt.Create) (string, error) {
 	ctx, _ = tag.New(ctx, tag.Insert(observability.KeyMethod, "indexview_create_one"))
 	ctx, span := trace.StartSpan(ctx, "mongo-go/mongo.(IndexView).CreateOne")
 	startTime := time.Now()
@@ -69,7 +74,7 @@ func (iv IndexView) CreateOne(ctx context.Context, model IndexModel, opts ...opt
 		span.End()
 	}()
 
-	names, err := iv.CreateMany(ctx, opts, model)
+	names, err := iv.CreateMany(ctx, []IndexModel{model}, opts...)
 	if err != nil {
 		return "", err
 	}
@@ -79,7 +84,7 @@ func (iv IndexView) CreateOne(ctx context.Context, model IndexModel, opts ...opt
 
 // CreateMany creates multiple indexes in the collection specified by the models. The names of the
 // creates indexes are returned.
-func (iv IndexView) CreateMany(ctx context.Context, opts []options.CreateIndexesOptioner, models ...IndexModel) ([]string, error) {
+func (iv IndexView) CreateMany(ctx context.Context, models []IndexModel, opts ...indexopt.Create) ([]string, error) {
 	ctx, _ = tag.New(ctx, tag.Insert(observability.KeyMethod, "indexview_create_many"))
 	ctx, span := trace.StartSpan(ctx, "mongo-go/mongo.(IndexView).CreateMany")
 	startTime := time.Now()
@@ -92,6 +97,10 @@ func (iv IndexView) CreateMany(ctx context.Context, opts []options.CreateIndexes
 	indexes := bson.NewArray()
 
 	for _, model := range models {
+		if model.Keys == nil {
+			return nil, fmt.Errorf("index model keys cannot be nil")
+		}
+
 		name, err := getOrGenerateIndexName(model)
 		if err != nil {
 			return nil, err
@@ -115,9 +124,14 @@ func (iv IndexView) CreateMany(ctx context.Context, opts []options.CreateIndexes
 		indexes.Append(bson.VC.Document(index))
 	}
 
-	cmd := command.CreateIndexes{NS: iv.coll.namespace(), Indexes: indexes, Opts: opts}
+	createOpts, err := indexopt.BundleCreate(opts...).Unbundle(true)
+	if err != nil {
+		return nil, err
+	}
 
-	_, err := dispatch.CreateIndexes(ctx, cmd, iv.coll.client.topology, iv.coll.writeSelector)
+	cmd := command.CreateIndexes{NS: iv.coll.namespace(), Indexes: indexes, Opts: createOpts}
+
+	_, err = dispatch.CreateIndexes(ctx, cmd, iv.coll.client.topology, iv.coll.writeSelector)
 	if err != nil {
 		ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "dispatch_create_indexes"))
 		stats.Record(ctx, observability.MErrors.M(1))
@@ -128,7 +142,7 @@ func (iv IndexView) CreateMany(ctx context.Context, opts []options.CreateIndexes
 }
 
 // DropOne drops the index with the given name from the collection.
-func (iv IndexView) DropOne(ctx context.Context, name string, opts ...options.DropIndexesOptioner) (bson.Reader, error) {
+func (iv IndexView) DropOne(ctx context.Context, name string, opts ...indexopt.Drop) (bson.Reader, error) {
 	ctx, _ = tag.New(ctx, tag.Insert(observability.KeyMethod, "indexview_drop_one"))
 	ctx, span := trace.StartSpan(ctx, "mongo-go/mongo.(IndexView).DropOne")
 	startTime := time.Now()
@@ -144,13 +158,18 @@ func (iv IndexView) DropOne(ctx context.Context, name string, opts ...options.Dr
 		return nil, ErrMultipleIndexDrop
 	}
 
-	cmd := command.DropIndexes{NS: iv.coll.namespace(), Index: name, Opts: opts}
+	dropOpts, err := indexopt.BundleDrop(opts...).Unbundle(true)
+	if err != nil {
+		return nil, err
+	}
+
+	cmd := command.DropIndexes{NS: iv.coll.namespace(), Index: name, Opts: dropOpts}
 
 	return dispatch.DropIndexes(ctx, cmd, iv.coll.client.topology, iv.coll.writeSelector)
 }
 
 // DropAll drops all indexes in the collection.
-func (iv IndexView) DropAll(ctx context.Context, opts ...options.DropIndexesOptioner) (bson.Reader, error) {
+func (iv IndexView) DropAll(ctx context.Context, opts ...indexopt.Drop) (bson.Reader, error) {
 	ctx, _ = tag.New(ctx, tag.Insert(observability.KeyMethod, "indexview_drop_all"))
 	ctx, span := trace.StartSpan(ctx, "mongo-go/mongo.(IndexView).DropAll")
 	startTime := time.Now()
@@ -159,24 +178,29 @@ func (iv IndexView) DropAll(ctx context.Context, opts ...options.DropIndexesOpti
 		span.End()
 	}()
 
-	cmd := command.DropIndexes{NS: iv.coll.namespace(), Index: "*", Opts: opts}
+	dropOpts, err := indexopt.BundleDrop(opts...).Unbundle(true)
+	if err != nil {
+		return nil, err
+	}
+
+	cmd := command.DropIndexes{NS: iv.coll.namespace(), Index: "*", Opts: dropOpts}
 
 	return dispatch.DropIndexes(ctx, cmd, iv.coll.client.topology, iv.coll.writeSelector)
 }
 
 func getOrGenerateIndexName(model IndexModel) (string, error) {
 	if model.Options != nil {
-		nameVal, err := model.Options.Lookup("name")
+		nameVal, err := model.Options.LookupErr("name")
 
 		switch err {
 		case bson.ErrElementNotFound:
 			break
 		case nil:
-			if nameVal.Value().Type() != bson.TypeString {
+			if nameVal.Type() != bson.TypeString {
 				return "", ErrNonStringIndexName
 			}
 
-			return nameVal.Value().StringValue(), nil
+			return nameVal.StringValue(), nil
 		default:
 			return "", err
 		}

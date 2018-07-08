@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mongodb/mongo-go-driver/core/addr"
+	"github.com/mongodb/mongo-go-driver/core/address"
 	"github.com/mongodb/mongo-go-driver/core/readpref"
 	"github.com/mongodb/mongo-go-driver/core/tag"
 	"github.com/stretchr/testify/require"
@@ -150,7 +150,7 @@ func selectServers(t *testing.T, test *testCase) error {
 
 	for _, serverDescription := range test.TopologyDescription.Servers {
 		server := Server{
-			Addr: addr.Addr(serverDescription.Address),
+			Addr: address.Address(serverDescription.Address),
 			Kind: serverKindFromString(serverDescription.Type),
 		}
 
@@ -189,8 +189,8 @@ func selectServers(t *testing.T, test *testCase) error {
 		}
 
 		// Max staleness can't be sent to servers older than 3.4.
-		if test.ReadPreference.MaxStaleness != nil {
-			server.Version = Version{Desc: "3.4.0", Parts: []uint8{3, 4, 0}}
+		if test.ReadPreference.MaxStaleness != nil && server.WireVersion == nil {
+			server.WireVersion = &VersionRange{Max: 5}
 		}
 
 		servers = append(servers, server)

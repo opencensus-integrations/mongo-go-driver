@@ -60,6 +60,17 @@ func AddTLSConfigToURI(uri string) string {
 	return AddOptionsToURI(uri, "ssl=true&sslCertificateAuthorityFile=", caFile)
 }
 
+// AddCompressorToUri checks for the environment variable indicating that the tests are being run with compression
+// enabled. If so, it returns a new URI with the necessary configuration
+func AddCompressorToUri(uri string) string {
+	comp := os.Getenv("MONGO_GO_DRIVER_COMPRESSOR")
+	if len(comp) == 0 {
+		return uri
+	}
+
+	return AddOptionsToURI(uri, "compressors=", comp)
+}
+
 // Topology gets the globally configured topology.
 func Topology(t *testing.T) *topology.Topology {
 	cs := ConnString(t)
@@ -104,12 +115,14 @@ func ColName(t *testing.T) string {
 // ConnString gets the globally configured connection string.
 func ConnString(t *testing.T) connstring.ConnString {
 	connectionStringOnce.Do(func() {
+		connectionString, connectionStringErr = GetConnString()
 		mongodbURI := os.Getenv("MONGODB_URI")
 		if mongodbURI == "" {
 			mongodbURI = "mongodb://localhost:27017"
 		}
 
 		mongodbURI = AddTLSConfigToURI(mongodbURI)
+		mongodbURI = AddCompressorToUri(mongodbURI)
 
 		var err error
 		connectionString, err = connstring.Parse(mongodbURI)
@@ -117,7 +130,6 @@ func ConnString(t *testing.T) connstring.ConnString {
 			connectionStringErr = err
 		}
 	})
-
 	if connectionStringErr != nil {
 		t.Fatal(connectionStringErr)
 	}
@@ -125,9 +137,28 @@ func ConnString(t *testing.T) connstring.ConnString {
 	return connectionString
 }
 
+func GetConnString() (connstring.ConnString, error) {
+	mongodbURI := os.Getenv("MONGODB_URI")
+	if mongodbURI == "" {
+		mongodbURI = "mongodb://localhost:27017"
+	}
+
+	mongodbURI = AddTLSConfigToURI(mongodbURI)
+
+	cs, err := connstring.Parse(mongodbURI)
+	if err != nil {
+		return connstring.ConnString{}, err
+	}
+
+	return cs, nil
+}
+
 // DBName gets the globally configured database name.
 func DBName(t *testing.T) string {
-	cs := ConnString(t)
+	return GetDBName(ConnString(t))
+}
+
+func GetDBName(cs connstring.ConnString) string {
 	if cs.Database != "" {
 		return cs.Database
 	}

@@ -34,7 +34,7 @@ func (a *DefaultAuthenticator) Auth(ctx context.Context, desc description.Server
 
 	var actual Authenticator
 	var err error
-	if err = description.ScramSHA1Supported(desc.Version); err != nil {
+	if err = description.ScramSHA1Supported(desc.WireVersion); err != nil {
 		actual, err = newMongoDBCRAuthenticator(a.Cred)
 	} else {
 		actual, err = newScramSHA1Authenticator(a.Cred)
@@ -42,7 +42,7 @@ func (a *DefaultAuthenticator) Auth(ctx context.Context, desc description.Server
 
 	if err != nil {
 		span.SetStatus(trace.Status{Message: err.Error(), Code: int32(trace.StatusCodeInternal)})
-		return err
+		return newAuthError("error creating authenticator", err)
 	}
 
 	return actual.Auth(ctx, desc, rw)

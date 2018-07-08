@@ -9,10 +9,11 @@ package topology
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/mongodb/mongo-go-driver/core/addr"
+	"github.com/mongodb/mongo-go-driver/core/address"
 	"github.com/mongodb/mongo-go-driver/core/description"
 )
 
@@ -42,9 +43,9 @@ func TestServerSelection(t *testing.T) {
 		noerr(t, err)
 		desc := description.Topology{
 			Servers: []description.Server{
-				{Addr: addr.Addr("one"), Kind: description.Standalone},
-				{Addr: addr.Addr("two"), Kind: description.Standalone},
-				{Addr: addr.Addr("three"), Kind: description.Standalone},
+				{Addr: address.Address("one"), Kind: description.Standalone},
+				{Addr: address.Address("two"), Kind: description.Standalone},
+				{Addr: address.Address("three"), Kind: description.Standalone},
 			},
 		}
 		subCh := make(chan description.Topology, 1)
@@ -74,9 +75,9 @@ func TestServerSelection(t *testing.T) {
 
 		desc = description.Topology{
 			Servers: []description.Server{
-				{Addr: addr.Addr("one"), Kind: description.Standalone},
-				{Addr: addr.Addr("two"), Kind: description.Standalone},
-				{Addr: addr.Addr("three"), Kind: description.Standalone},
+				{Addr: address.Address("one"), Kind: description.Standalone},
+				{Addr: address.Address("two"), Kind: description.Standalone},
+				{Addr: address.Address("three"), Kind: description.Standalone},
 			},
 		}
 		select {
@@ -102,9 +103,9 @@ func TestServerSelection(t *testing.T) {
 	t.Run("Cancel", func(t *testing.T) {
 		desc := description.Topology{
 			Servers: []description.Server{
-				{Addr: addr.Addr("one"), Kind: description.Standalone},
-				{Addr: addr.Addr("two"), Kind: description.Standalone},
-				{Addr: addr.Addr("three"), Kind: description.Standalone},
+				{Addr: address.Address("one"), Kind: description.Standalone},
+				{Addr: address.Address("two"), Kind: description.Standalone},
+				{Addr: address.Address("three"), Kind: description.Standalone},
 			},
 		}
 		topo, err := New()
@@ -139,9 +140,9 @@ func TestServerSelection(t *testing.T) {
 	t.Run("Timeout", func(t *testing.T) {
 		desc := description.Topology{
 			Servers: []description.Server{
-				{Addr: addr.Addr("one"), Kind: description.Standalone},
-				{Addr: addr.Addr("two"), Kind: description.Standalone},
-				{Addr: addr.Addr("three"), Kind: description.Standalone},
+				{Addr: address.Address("one"), Kind: description.Standalone},
+				{Addr: address.Address("two"), Kind: description.Standalone},
+				{Addr: address.Address("three"), Kind: description.Standalone},
 			},
 		}
 		topo, err := New()
@@ -174,9 +175,9 @@ func TestServerSelection(t *testing.T) {
 	t.Run("Error", func(t *testing.T) {
 		desc := description.Topology{
 			Servers: []description.Server{
-				{Addr: addr.Addr("one"), Kind: description.Standalone},
-				{Addr: addr.Addr("two"), Kind: description.Standalone},
-				{Addr: addr.Addr("three"), Kind: description.Standalone},
+				{Addr: address.Address("one"), Kind: description.Standalone},
+				{Addr: address.Address("two"), Kind: description.Standalone},
+				{Addr: address.Address("three"), Kind: description.Standalone},
 			},
 		}
 		topo, err := New()
@@ -198,6 +199,25 @@ func TestServerSelection(t *testing.T) {
 
 		if err != errSelectionError {
 			t.Errorf("Incorrect error received. got %v; want %v", err, errSelectionError)
+		}
+	})
+	t.Run("findServer returns topology kind", func(t *testing.T) {
+		topo, err := New()
+		noerr(t, err)
+		atomic.StoreInt32(&topo.connectionstate, connected)
+		srvr, err := NewServer(address.Address("one"))
+		noerr(t, err)
+		topo.servers[address.Address("one")] = srvr
+		desc := topo.desc.Load().(description.Topology)
+		desc.Kind = description.Single
+		topo.desc.Store(desc)
+
+		selected := description.Server{Addr: address.Address("one")}
+
+		ss, err := topo.findServer(selected)
+		noerr(t, err)
+		if ss.Kind != description.Single {
+			t.Errorf("findServer does not properly set the topology description kind. got %v; want %v", ss.Kind, description.Single)
 		}
 	})
 }

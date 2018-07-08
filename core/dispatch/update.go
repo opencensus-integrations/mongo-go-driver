@@ -11,7 +11,6 @@ import (
 
 	"github.com/mongodb/mongo-go-driver/core/command"
 	"github.com/mongodb/mongo-go-driver/core/description"
-	"github.com/mongodb/mongo-go-driver/core/options"
 	"github.com/mongodb/mongo-go-driver/core/result"
 	"github.com/mongodb/mongo-go-driver/core/topology"
 	"github.com/mongodb/mongo-go-driver/core/writeconcern"
@@ -44,6 +43,7 @@ func Update(
 		return result.Update{}, err
 	}
 
+	acknowledged := true
 	if wc != nil {
 		opt, err := writeConcernOption(wc)
 		if err != nil {
@@ -53,21 +53,9 @@ func Update(
 			return result.Update{}, err
 		}
 		cmd.Opts = append(cmd.Opts, opt)
+		acknowledged = wc.Acknowledged()
 	}
 
-	// NOTE: We iterate through the options because the user may have provided
-	// an option explicitly and that needs to override the provided write concern.
-	// We put this here because it would complicate the methods that call this to
-	// parse out the option.
-	acknowledged := true
-	for _, opt := range cmd.Opts {
-		wc, ok := opt.(options.OptWriteConcern)
-		if !ok {
-			continue
-		}
-		acknowledged = wc.Acknowledged
-		break
-	}
 	desc := ss.Description()
 	span.Annotatef(nil, "Starting ss.Connection")
 	conn, err := ss.Connection(ctx)

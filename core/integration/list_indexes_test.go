@@ -13,7 +13,7 @@ import (
 	"github.com/mongodb/mongo-go-driver/bson"
 	"github.com/mongodb/mongo-go-driver/core/command"
 	"github.com/mongodb/mongo-go-driver/core/description"
-	"github.com/mongodb/mongo-go-driver/core/options"
+	"github.com/mongodb/mongo-go-driver/core/option"
 	"github.com/mongodb/mongo-go-driver/internal/testutil"
 )
 
@@ -41,13 +41,13 @@ func TestCommandListIndexes(t *testing.T) {
 			err = cursor.Decode(next)
 			noerr(t, err)
 
-			elem, err := next.Lookup("name")
+			val, err := next.LookupErr("name")
 			noerr(t, err)
-			if elem.Value().Type() != bson.TypeString {
-				t.Errorf("Incorrect type for 'name'. got %v; want %v", elem.Value().Type(), bson.TypeString)
+			if val.Type() != bson.TypeString {
+				t.Errorf("Incorrect type for 'name'. got %v; want %v", val.Type(), bson.TypeString)
 				t.FailNow()
 			}
-			indexes = append(indexes, elem.Value().StringValue())
+			indexes = append(indexes, val.StringValue())
 		}
 
 		if len(indexes) != 0 {
@@ -70,13 +70,13 @@ func TestCommandListIndexes(t *testing.T) {
 			err = cursor.Decode(next)
 			noerr(t, err)
 
-			elem, err := next.Lookup("name")
+			val, err := next.LookupErr("name")
 			noerr(t, err)
-			if elem.Value().Type() != bson.TypeString {
-				t.Errorf("Incorrect type for 'name'. got %v; want %v", elem.Value().Type(), bson.TypeString)
+			if val.Type() != bson.TypeString {
+				t.Errorf("Incorrect type for 'name'. got %v; want %v", val.Type(), bson.TypeString)
 				t.FailNow()
 			}
-			indexes = append(indexes, elem.Value().StringValue())
+			indexes = append(indexes, val.StringValue())
 		}
 
 		if len(indexes) != 0 {
@@ -105,13 +105,13 @@ func TestCommandListIndexes(t *testing.T) {
 			err = cursor.Decode(next)
 			noerr(t, err)
 
-			elem, err := next.Lookup("name")
+			val, err := next.LookupErr("name")
 			noerr(t, err)
-			if elem.Value().Type() != bson.TypeString {
-				t.Errorf("Incorrect type for 'name'. got %v; want %v", elem.Value().Type(), bson.TypeString)
+			if val.Type() != bson.TypeString {
+				t.Errorf("Incorrect type for 'name'. got %v; want %v", val.Type(), bson.TypeString)
 				t.FailNow()
 			}
-			indexes = append(indexes, elem.Value().StringValue())
+			indexes = append(indexes, val.StringValue())
 		}
 
 		if len(indexes) != 5 {
@@ -135,7 +135,7 @@ func TestCommandListIndexes(t *testing.T) {
 		testutil.AutoCreateIndexes(t, []string{"c"})
 
 		ns := command.NewNamespace(dbName, testutil.ColName(t))
-		cursor, err := (&command.ListIndexes{NS: ns, Opts: []options.ListIndexesOptioner{options.OptBatchSize(1)}}).RoundTrip(context.Background(), server.SelectedDescription(), server, conn)
+		cursor, err := (&command.ListIndexes{NS: ns, Opts: []option.ListIndexesOptioner{option.OptBatchSize(1)}}).RoundTrip(context.Background(), server.SelectedDescription(), server, conn)
 		noerr(t, err)
 
 		indexes := []string{}
@@ -145,13 +145,13 @@ func TestCommandListIndexes(t *testing.T) {
 			err = cursor.Decode(next)
 			noerr(t, err)
 
-			elem, err := next.Lookup("name")
+			val, err := next.LookupErr("name")
 			noerr(t, err)
-			if elem.Value().Type() != bson.TypeString {
-				t.Errorf("Incorrect type for 'name'. got %v; want %v", elem.Value().Type(), bson.TypeString)
+			if val.Type() != bson.TypeString {
+				t.Errorf("Incorrect type for 'name'. got %v; want %v", val.Type(), bson.TypeString)
 				t.FailNow()
 			}
-			indexes = append(indexes, elem.Value().StringValue())
+			indexes = append(indexes, val.StringValue())
 		}
 
 		if len(indexes) != 4 {
