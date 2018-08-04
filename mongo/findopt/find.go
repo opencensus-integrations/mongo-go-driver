@@ -11,16 +11,27 @@ import (
 	"time"
 
 	"github.com/mongodb/mongo-go-driver/core/option"
-	"github.com/mongodb/mongo-go-driver/core/readconcern"
+	"github.com/mongodb/mongo-go-driver/core/session"
 	"github.com/mongodb/mongo-go-driver/mongo/mongoopt"
 )
 
 var findBundle = new(FindBundle)
 
-// Find is an interface for find options
+// Find represents all passable params for the find() function.
 type Find interface {
 	find()
+}
+
+// FindOption represents the options for the find() function.
+type FindOption interface {
+	Find
 	ConvertFindOption() option.FindOptioner
+}
+
+// FindSession is the session for the find() function
+type FindSession interface {
+	Find
+	ConvertFindSession() *session.Client
 }
 
 // FindBundle is a bundle of Find options
@@ -200,16 +211,6 @@ func (fb *FindBundle) Projection(projection interface{}) *FindBundle {
 	return bundle
 }
 
-// ReadConcern adds an option to set the read concern.
-func (fb *FindBundle) ReadConcern(rc *readconcern.ReadConcern) *FindBundle {
-	bundle := &FindBundle{
-		option: ReadConcern(rc),
-		next:   fb,
-	}
-
-	return bundle
-}
-
 // ReturnKey adds an option to only return index keys for all result documents.
 func (fb *FindBundle) ReturnKey(b bool) *FindBundle {
 	bundle := &FindBundle{
@@ -268,14 +269,14 @@ func (fb *FindBundle) Sort(sort interface{}) *FindBundle {
 // if we actually deduplicate options.
 //
 // Since a FindBundle can be recursive, this method will unwind all recursive FindBundles.
-func (fb *FindBundle) Unbundle(deduplicate bool) ([]option.FindOptioner, error) {
-	options, err := fb.unbundle()
+func (fb *FindBundle) Unbundle(deduplicate bool) ([]option.FindOptioner, *session.Client, error) {
+	options, sess, err := fb.unbundle()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	if !deduplicate {
-		return options, nil
+		return options, sess, nil
 	}
 
 	// iterate backwards and make dedup slice
@@ -294,7 +295,7 @@ func (fb *FindBundle) Unbundle(deduplicate bool) ([]option.FindOptioner, error) 
 		optionsSet[optionType] = struct{}{}
 	}
 
-	return options, nil
+	return options, sess, nil
 }
 
 // Calculates the total length of a bundle, accounting for nested bundles.
@@ -304,36 +305,49 @@ func (fb *FindBundle) bundleLength() int {
 	}
 
 	bundleLen := 0
-	for ; fb != nil && fb.option != nil; fb = fb.next {
+	for ; fb != nil; fb = fb.next {
+		if fb.option == nil {
+			continue
+		}
 		if converted, ok := fb.option.(*FindBundle); ok {
 			// nested bundle
 			bundleLen += converted.bundleLength()
 			continue
 		}
 
-		bundleLen++
+		if _, ok := fb.option.(FindSessionOpt); !ok {
+			bundleLen++
+		}
 	}
 
 	return bundleLen
 }
 
 // Helper that recursively unwraps bundle into slice of options
-func (fb *FindBundle) unbundle() ([]option.FindOptioner, error) {
+func (fb *FindBundle) unbundle() ([]option.FindOptioner, *session.Client, error) {
 	if fb == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 
+	var sess *session.Client
 	listLen := fb.bundleLength()
 
 	options := make([]option.FindOptioner, listLen)
 	index := listLen - 1
 
-	for listHead := fb; listHead != nil && listHead.option != nil; listHead = listHead.next {
+	for listHead := fb; listHead != nil; listHead = listHead.next {
+		if listHead.option == nil {
+			continue
+		}
+
 		// if the current option is a nested bundle, Unbundle it and add its options to the current array
 		if converted, ok := listHead.option.(*FindBundle); ok {
-			nestedOptions, err := converted.unbundle()
+			nestedOptions, s, err := converted.unbundle()
 			if err != nil {
-				return nil, err
+				return nil, nil, err
+			}
+			if s != nil && sess == nil {
+				sess = s
 			}
 
 			// where to start inserting nested options
@@ -348,11 +362,18 @@ func (fb *FindBundle) unbundle() ([]option.FindOptioner, error) {
 			continue
 		}
 
-		options[index] = listHead.option.ConvertFindOption()
-		index--
+		switch t := listHead.option.(type) {
+		case FindOption:
+			options[index] = t.ConvertFindOption()
+			index--
+		case FindSession:
+			if sess == nil {
+				sess = t.ConvertFindSession()
+			}
+		}
 	}
 
-	return options, nil
+	return options, sess, nil
 
 }
 
@@ -369,7 +390,9 @@ func (fb *FindBundle) String() string {
 			continue
 		}
 
-		str += head.option.ConvertFindOption().String() + "\n"
+		if conv, ok := head.option.(FindOption); !ok {
+			str += conv.ConvertFindOption().String() + "\n"
+		}
 	}
 
 	return str

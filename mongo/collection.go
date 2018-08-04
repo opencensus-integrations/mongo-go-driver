@@ -19,6 +19,7 @@ import (
 	"github.com/mongodb/mongo-go-driver/core/option"
 	"github.com/mongodb/mongo-go-driver/core/readconcern"
 	"github.com/mongodb/mongo-go-driver/core/readpref"
+	"github.com/mongodb/mongo-go-driver/core/session"
 	"github.com/mongodb/mongo-go-driver/core/writeconcern"
 	"github.com/mongodb/mongo-go-driver/mongo/aggregateopt"
 	"github.com/mongodb/mongo-go-driver/mongo/changestreamopt"
@@ -26,6 +27,7 @@ import (
 	"github.com/mongodb/mongo-go-driver/mongo/countopt"
 	"github.com/mongodb/mongo-go-driver/mongo/deleteopt"
 	"github.com/mongodb/mongo-go-driver/mongo/distinctopt"
+	"github.com/mongodb/mongo-go-driver/mongo/dropcollopt"
 	"github.com/mongodb/mongo-go-driver/mongo/findopt"
 	"github.com/mongodb/mongo-go-driver/mongo/insertopt"
 	"github.com/mongodb/mongo-go-driver/mongo/replaceopt"
@@ -84,6 +86,42 @@ func newCollection(db *Database, name string, opts ...collectionopt.Option) *Col
 	return coll
 }
 
+func (coll *Collection) copy() *Collection {
+	return &Collection{
+		client:         coll.client,
+		db:             coll.db,
+		name:           coll.name,
+		readConcern:    coll.readConcern,
+		writeConcern:   coll.writeConcern,
+		readPreference: coll.readPreference,
+		readSelector:   coll.readSelector,
+		writeSelector:  coll.writeSelector,
+	}
+}
+
+// Clone creates a copy of this collection with updated options, if any are given.
+func (coll *Collection) Clone(opts ...collectionopt.Option) (*Collection, error) {
+	copyColl := coll.copy()
+	optsColl, err := collectionopt.BundleCollection(opts...).Unbundle()
+	if err != nil {
+		return nil, err
+	}
+
+	if optsColl.ReadConcern != nil {
+		copyColl.readConcern = optsColl.ReadConcern
+	}
+
+	if optsColl.WriteConcern != nil {
+		copyColl.writeConcern = optsColl.WriteConcern
+	}
+
+	if optsColl.ReadPreference != nil {
+		copyColl.readPreference = optsColl.ReadPreference
+	}
+
+	return copyColl, nil
+}
+
 // Name provides access to the name of the collection.
 func (coll *Collection) Name() string {
 	return coll.name
@@ -118,9 +156,9 @@ func (coll *Collection) InsertOne(ctx context.Context, document interface{},
 		span.End()
 	}()
 
-	span.Annotatef(nil, "Starting TransformDocument")
+	span.Annotate(nil, "Starting TransformDocument")
 	doc, err := TransformDocument(document)
-	span.Annotatef(nil, "Finished TransformDocument")
+	span.Annotate(nil, "Finished TransformDocument")
 	if err != nil {
 		ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "transform_document"))
 		stats.Record(ctx, observability.MErrors.M(1))
@@ -128,9 +166,9 @@ func (coll *Collection) InsertOne(ctx context.Context, document interface{},
 		return nil, err
 	}
 
-	span.Annotatef(nil, "Starting EnsureID", nil)
+	span.Annotate(nil, "Starting EnsureID")
 	insertedID, err := ensureID(doc)
-	span.Annotatef(nil, "Finished EnsureID", nil)
+	span.Annotate(nil, "Finished EnsureID")
 	if err != nil {
 		ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "ensure_id"))
 		stats.Record(ctx, observability.MErrors.M(1))
@@ -139,20 +177,34 @@ func (coll *Collection) InsertOne(ctx context.Context, document interface{},
 	}
 
 	// convert options into []option.InsertOptioner and dedup
-	oneOpts, err := insertopt.BundleOne(opts...).Unbundle(true)
+	oneOpts, sess, err := insertopt.BundleOne(opts...).Unbundle(true)
+	if err != nil {
+		return nil, err
+	}
 
+	err = coll.client.ValidSession(sess)
 	if err != nil {
 		return nil, err
 	}
 
 	oldns := coll.namespace()
 	cmd := command.Insert{
-		NS:   command.Namespace{DB: oldns.DB, Collection: oldns.Collection},
-		Docs: []*bson.Document{doc},
-		Opts: oneOpts,
+		NS:           command.Namespace{DB: oldns.DB, Collection: oldns.Collection},
+		Docs:         []*bson.Document{doc},
+		Opts:         oneOpts,
+		WriteConcern: coll.writeConcern,
+		Session:      sess,
+		Clock:        coll.client.clock,
 	}
 
-	res, err := dispatch.Insert(ctx, cmd, coll.client.topology, coll.writeSelector, coll.writeConcern)
+	res, err := dispatch.Insert(
+		ctx, cmd,
+		coll.client.topology,
+		coll.writeSelector,
+		coll.client.id,
+		coll.client.topology.SessionPool,
+	)
+
 	rr, err := processWriteError(res.WriteConcernError, res.WriteErrors, err)
 
 	if err == nil {
@@ -166,6 +218,7 @@ func (coll *Collection) InsertOne(ctx context.Context, document interface{},
 	if rr&rrOne == 0 {
 		return nil, err
 	}
+
 	return &InsertOneResult{InsertedID: insertedID}, err
 }
 
@@ -224,29 +277,37 @@ func (coll *Collection) InsertMany(ctx context.Context, documents []interface{},
 	}
 
 	// convert options into []option.InsertOptioner and dedup
-	manyOpts, err := insertopt.BundleMany(opts...).Unbundle(true)
+	manyOpts, sess, err := insertopt.BundleMany(opts...).Unbundle(true)
+	if err != nil {
+		return nil, err
+	}
 
+	err = coll.client.ValidSession(sess)
 	if err != nil {
 		return nil, err
 	}
 
 	oldns := coll.namespace()
 	cmd := command.Insert{
-		NS:   command.Namespace{DB: oldns.DB, Collection: oldns.Collection},
-		Docs: docs,
-		Opts: manyOpts,
+		NS:           command.Namespace{DB: oldns.DB, Collection: oldns.Collection},
+		Docs:         docs,
+		Opts:         manyOpts,
+		WriteConcern: coll.writeConcern,
+		Session:      sess,
+		Clock:        coll.client.clock,
 	}
 
-	res, err := dispatch.Insert(ctx, cmd, coll.client.topology, coll.writeSelector, coll.writeConcern)
+	res, err := dispatch.Insert(
+		ctx, cmd,
+		coll.client.topology,
+		coll.writeSelector,
+		coll.client.id,
+		coll.client.topology.SessionPool,
+	)
+
 	switch err {
 	case nil:
-	case dispatch.ErrUnacknowledgedWrite:
-		ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "dispatch_insert"))
-		stats.Record(ctx, observability.MErrors.M(1))
-		span.SetStatus(trace.Status{
-			Code:    int32(trace.StatusCodeDataLoss),
-			Message: "Unacknowleged write",
-		})
+	case command.ErrUnacknowledgedWrite:
 		return &InsertManyResult{InsertedIDs: result}, ErrUnacknowledgedWrite
 
 	default:
@@ -270,6 +331,7 @@ func (coll *Collection) InsertMany(ctx context.Context, documents []interface{},
 		stats.Record(ctx, observability.MErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 	}
+
 	return &InsertManyResult{InsertedIDs: result}, err
 }
 
@@ -307,19 +369,34 @@ func (coll *Collection) DeleteOne(ctx context.Context, filter interface{},
 			bson.EC.Int32("limit", 1)),
 	}
 
-	deleteOpts, err := deleteopt.BundleDelete(opts...).Unbundle(true)
+	deleteOpts, sess, err := deleteopt.BundleDelete(opts...).Unbundle(true)
+	if err != nil {
+		return nil, err
+	}
+
+	err = coll.client.ValidSession(sess)
 	if err != nil {
 		return nil, err
 	}
 
 	oldns := coll.namespace()
 	cmd := command.Delete{
-		NS:      command.Namespace{DB: oldns.DB, Collection: oldns.Collection},
-		Deletes: deleteDocs,
-		Opts:    deleteOpts,
+		NS:           command.Namespace{DB: oldns.DB, Collection: oldns.Collection},
+		Deletes:      deleteDocs,
+		Opts:         deleteOpts,
+		WriteConcern: coll.writeConcern,
+		Session:      sess,
+		Clock:        coll.client.clock,
 	}
 
-	res, err := dispatch.Delete(ctx, cmd, coll.client.topology, coll.writeSelector, coll.writeConcern)
+	res, err := dispatch.Delete(
+		ctx, cmd,
+		coll.client.topology,
+		coll.writeSelector,
+		coll.client.id,
+		coll.client.topology.SessionPool,
+	)
+
 	rr, err := processWriteError(res.WriteConcernError, res.WriteErrors, err)
 	if err == nil {
 		stats.Record(ctx, observability.MDeletions.M(1))
@@ -365,19 +442,34 @@ func (coll *Collection) DeleteMany(ctx context.Context, filter interface{},
 	}
 	deleteDocs := []*bson.Document{bson.NewDocument(bson.EC.SubDocument("q", f), bson.EC.Int32("limit", 0))}
 
-	deleteOpts, err := deleteopt.BundleDelete(opts...).Unbundle(true)
+	deleteOpts, sess, err := deleteopt.BundleDelete(opts...).Unbundle(true)
+	if err != nil {
+		return nil, err
+	}
+
+	err = coll.client.ValidSession(sess)
 	if err != nil {
 		return nil, err
 	}
 
 	oldns := coll.namespace()
 	cmd := command.Delete{
-		NS:      command.Namespace{DB: oldns.DB, Collection: oldns.Collection},
-		Deletes: deleteDocs,
-		Opts:    deleteOpts,
+		NS:           command.Namespace{DB: oldns.DB, Collection: oldns.Collection},
+		Deletes:      deleteDocs,
+		Opts:         deleteOpts,
+		WriteConcern: coll.writeConcern,
+		Session:      sess,
+		Clock:        coll.client.clock,
 	}
 
-	res, err := dispatch.Delete(ctx, cmd, coll.client.topology, coll.writeSelector, coll.writeConcern)
+	res, err := dispatch.Delete(
+		ctx, cmd,
+		coll.client.topology,
+		coll.writeSelector,
+		coll.client.id,
+		coll.client.topology.SessionPool,
+	)
+
 	rr, err := processWriteError(res.WriteConcernError, res.WriteErrors, err)
 	if err == nil {
 		stats.Record(ctx, observability.MDeletions.M(1))
@@ -394,7 +486,7 @@ func (coll *Collection) DeleteMany(ctx context.Context, filter interface{},
 }
 
 func (coll *Collection) updateOrReplaceOne(ctx context.Context, filter,
-	update *bson.Document, opts ...option.UpdateOptioner) (*UpdateResult, error) {
+	update *bson.Document, sess *session.Client, opts ...option.UpdateOptioner) (*UpdateResult, error) {
 
 	if ctx == nil {
 		ctx = context.Background()
@@ -413,18 +505,28 @@ func (coll *Collection) updateOrReplaceOne(ctx context.Context, filter,
 
 	oldns := coll.namespace()
 	cmd := command.Update{
-		NS:   command.Namespace{DB: oldns.DB, Collection: oldns.Collection},
-		Docs: updateDocs,
-		Opts: opts,
+		NS:           command.Namespace{DB: oldns.DB, Collection: oldns.Collection},
+		Docs:         updateDocs,
+		Opts:         opts,
+		WriteConcern: coll.writeConcern,
+		Session:      sess,
+		Clock:        coll.client.clock,
 	}
 
-	r, err := dispatch.Update(ctx, cmd, coll.client.topology, coll.writeSelector, coll.writeConcern)
-	if err != nil && err != dispatch.ErrUnacknowledgedWrite {
+	r, err := dispatch.Update(
+		ctx, cmd,
+		coll.client.topology,
+		coll.writeSelector,
+		coll.client.id,
+		coll.client.topology.SessionPool,
+	)
+	if err != nil && err != command.ErrUnacknowledgedWrite {
 		ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "dispatch_update"))
 		stats.Record(ctx, observability.MErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return nil, err
 	}
+
 	res := &UpdateResult{
 		MatchedCount:  r.MatchedCount,
 		ModifiedCount: r.ModifiedCount,
@@ -492,14 +594,19 @@ func (coll *Collection) UpdateOne(ctx context.Context, filter interface{}, updat
 		return nil, err
 	}
 
-	updOpts, err := updateopt.BundleUpdate(options...).Unbundle(true)
+	updOpts, sess, err := updateopt.BundleUpdate(options...).Unbundle(true)
 	if err != nil {
 		// updateOrReplaceOne already sets error metrics
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return nil, err
 	}
 
-	return coll.updateOrReplaceOne(ctx, f, u, updOpts...)
+	err = coll.client.ValidSession(sess)
+	if err != nil {
+		return nil, err
+	}
+
+	return coll.updateOrReplaceOne(ctx, f, u, sess, updOpts...)
 }
 
 // UpdateMany updates multiple documents in the collection. A user can supply
@@ -554,20 +661,40 @@ func (coll *Collection) UpdateMany(ctx context.Context, filter interface{}, upda
 		),
 	}
 
-	updOpts, err := updateopt.BundleUpdate(opts...).Unbundle(true)
+	updOpts, sess, err := updateopt.BundleUpdate(opts...).Unbundle(true)
 	if err != nil {
+		ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "updateopt_bundleupdate"))
+		stats.Record(ctx, observability.MErrors.M(1))
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
+		return nil, err
+	}
+
+	err = coll.client.ValidSession(sess)
+	if err != nil {
+		ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "client_validsession"))
+		stats.Record(ctx, observability.MErrors.M(1))
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return nil, err
 	}
 
 	oldns := coll.namespace()
 	cmd := command.Update{
-		NS:   command.Namespace{DB: oldns.DB, Collection: oldns.Collection},
-		Docs: updateDocs,
-		Opts: updOpts,
+		NS:           command.Namespace{DB: oldns.DB, Collection: oldns.Collection},
+		Docs:         updateDocs,
+		Opts:         updOpts,
+		WriteConcern: coll.writeConcern,
+		Session:      sess,
+		Clock:        coll.client.clock,
 	}
 
-	r, err := dispatch.Update(ctx, cmd, coll.client.topology, coll.writeSelector, coll.writeConcern)
-	if err != nil && err != dispatch.ErrUnacknowledgedWrite {
+	r, err := dispatch.Update(
+		ctx, cmd,
+		coll.client.topology,
+		coll.writeSelector,
+		coll.client.id,
+		coll.client.topology.SessionPool,
+	)
+	if err != nil && err != command.ErrUnacknowledgedWrite {
 		// dispatch.Update already sets error metrics
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return nil, err
@@ -644,7 +771,12 @@ func (coll *Collection) ReplaceOne(ctx context.Context, filter interface{},
 		return nil, errors.New("replacement document cannot contains keys beginning with '$")
 	}
 
-	repOpts, err := replaceopt.BundleReplace(opts...).Unbundle(true)
+	repOpts, sess, err := replaceopt.BundleReplace(opts...).Unbundle(true)
+	if err != nil {
+		return nil, err
+	}
+
+	err = coll.client.ValidSession(sess)
 	if err != nil {
 		return nil, err
 	}
@@ -654,7 +786,7 @@ func (coll *Collection) ReplaceOne(ctx context.Context, filter interface{},
 		updateOptions = append(updateOptions, opt)
 	}
 
-	ures, err := coll.updateOrReplaceOne(ctx, f, r, updateOptions...)
+	ures, err := coll.updateOrReplaceOne(ctx, f, r, sess, updateOptions...)
 	if err != nil {
 		// updateOrReplaceOne already sets error metrics
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
@@ -694,24 +826,42 @@ func (coll *Collection) Aggregate(ctx context.Context, pipeline interface{},
 	}
 
 	// convert options into []option.Optioner and dedup
-	aggOpts, err := aggregateopt.BundleAggregate(opts...).Unbundle(true)
+	aggOpts, sess, err := aggregateopt.BundleAggregate(opts...).Unbundle(true)
+	if err != nil {
+		return nil, err
+	}
+
+	err = coll.client.ValidSession(sess)
 	if err != nil {
 		return nil, err
 	}
 
 	oldns := coll.namespace()
 	cmd := command.Aggregate{
-		NS:       command.Namespace{DB: oldns.DB, Collection: oldns.Collection},
-		Pipeline: pipelineArr,
-		Opts:     aggOpts,
-		ReadPref: coll.readPreference,
+		NS:           command.Namespace{DB: oldns.DB, Collection: oldns.Collection},
+		Pipeline:     pipelineArr,
+		Opts:         aggOpts,
+		ReadPref:     coll.readPreference,
+		WriteConcern: coll.writeConcern,
+		ReadConcern:  coll.readConcern,
+		Session:      sess,
+		Clock:        coll.client.clock,
 	}
-	cur, err := dispatch.Aggregate(ctx, cmd, coll.client.topology, coll.readSelector, coll.writeSelector, coll.writeConcern)
+
+	cur, err := dispatch.Aggregate(
+		ctx, cmd,
+		coll.client.topology,
+		coll.readSelector,
+		coll.writeSelector,
+		coll.client.id,
+		coll.client.topology.SessionPool,
+	)
 	if err != nil {
 		// dispatch.Aggregate already sets error metrics
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 	}
 	return cur, err
+
 }
 
 // Count gets the number of documents matching the filter. A user can supply a
@@ -743,19 +893,34 @@ func (coll *Collection) Count(ctx context.Context, filter interface{},
 		return 0, err
 	}
 
-	countOpts, err := countopt.BundleCount(opts...).Unbundle(true)
+	countOpts, sess, err := countopt.BundleCount(opts...).Unbundle(true)
+	if err != nil {
+		return 0, err
+	}
+
+	err = coll.client.ValidSession(sess)
 	if err != nil {
 		return 0, err
 	}
 
 	oldns := coll.namespace()
 	cmd := command.Count{
-		NS:       command.Namespace{DB: oldns.DB, Collection: oldns.Collection},
-		Query:    f,
-		Opts:     countOpts,
-		ReadPref: coll.readPreference,
+		NS:          command.Namespace{DB: oldns.DB, Collection: oldns.Collection},
+		Query:       f,
+		Opts:        countOpts,
+		ReadPref:    coll.readPreference,
+		ReadConcern: coll.readConcern,
+		Session:     sess,
+		Clock:       coll.client.clock,
 	}
-	count, err := dispatch.Count(ctx, cmd, coll.client.topology, coll.readSelector, coll.readConcern)
+
+	count, err := dispatch.Count(
+		ctx, cmd,
+		coll.client.topology,
+		coll.readSelector,
+		coll.client.id,
+		coll.client.topology.SessionPool,
+	)
 	if err != nil {
 		// dispatch.Count already sets error metrics
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
@@ -799,20 +964,35 @@ func (coll *Collection) Distinct(ctx context.Context, fieldName string, filter i
 		}
 	}
 
-	distinctOpts, err := distinctopt.BundleDistinct(opts...).Unbundle(true)
+	distinctOpts, sess, err := distinctopt.BundleDistinct(opts...).Unbundle(true)
+	if err != nil {
+		return nil, err
+	}
+
+	err = coll.client.ValidSession(sess)
 	if err != nil {
 		return nil, err
 	}
 
 	oldns := coll.namespace()
 	cmd := command.Distinct{
-		NS:       command.Namespace{DB: oldns.DB, Collection: oldns.Collection},
-		Field:    fieldName,
-		Query:    f,
-		Opts:     distinctOpts,
-		ReadPref: coll.readPreference,
+		NS:          command.Namespace{DB: oldns.DB, Collection: oldns.Collection},
+		Field:       fieldName,
+		Query:       f,
+		Opts:        distinctOpts,
+		ReadPref:    coll.readPreference,
+		ReadConcern: coll.readConcern,
+		Session:     sess,
+		Clock:       coll.client.clock,
 	}
-	res, err := dispatch.Distinct(ctx, cmd, coll.client.topology, coll.readSelector, coll.readConcern)
+
+	res, err := dispatch.Distinct(
+		ctx, cmd,
+		coll.client.topology,
+		coll.readSelector,
+		coll.client.id,
+		coll.client.topology.SessionPool,
+	)
 	if err != nil {
 		// dispatch.Distinct already sets error metrics
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
@@ -857,19 +1037,34 @@ func (coll *Collection) Find(ctx context.Context, filter interface{},
 		}
 	}
 
-	findOpts, err := findopt.BundleFind(opts...).Unbundle(true)
+	findOpts, sess, err := findopt.BundleFind(opts...).Unbundle(true)
+	if err != nil {
+		return nil, err
+	}
+
+	err = coll.client.ValidSession(sess)
 	if err != nil {
 		return nil, err
 	}
 
 	oldns := coll.namespace()
 	cmd := command.Find{
-		NS:       command.Namespace{DB: oldns.DB, Collection: oldns.Collection},
-		Filter:   f,
-		Opts:     findOpts,
-		ReadPref: coll.readPreference,
+		NS:          command.Namespace{DB: oldns.DB, Collection: oldns.Collection},
+		Filter:      f,
+		Opts:        findOpts,
+		ReadPref:    coll.readPreference,
+		ReadConcern: coll.readConcern,
+		Session:     sess,
+		Clock:       coll.client.clock,
 	}
-	cur, err := dispatch.Find(ctx, cmd, coll.client.topology, coll.readSelector, coll.readConcern)
+
+	cur, err := dispatch.Find(
+		ctx, cmd,
+		coll.client.topology,
+		coll.readSelector,
+		coll.client.id,
+		coll.client.topology.SessionPool,
+	)
 	if err != nil {
 		// dispatch.Find already sets error metrics
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
@@ -899,7 +1094,6 @@ func (coll *Collection) FindOne(ctx context.Context, filter interface{},
 		span.End()
 	}()
 
-
 	var f *bson.Document
 	var err error
 	if filter != nil {
@@ -914,20 +1108,35 @@ func (coll *Collection) FindOne(ctx context.Context, filter interface{},
 		}
 	}
 
-	findOneOpts, err := findopt.BundleOne(opts...).Unbundle(true)
+	findOneOpts, sess, err := findopt.BundleOne(opts...).Unbundle(true)
 	if err != nil {
 		return &DocumentResult{err: err}
 	}
 	findOneOpts = append(findOneOpts, findopt.Limit(1).ConvertFindOption())
 
+	err = coll.client.ValidSession(sess)
+	if err != nil {
+		return &DocumentResult{err: err}
+	}
+
 	oldns := coll.namespace()
 	cmd := command.Find{
-		NS:       command.Namespace{DB: oldns.DB, Collection: oldns.Collection},
-		Filter:   f,
-		Opts:     findOneOpts,
-		ReadPref: coll.readPreference,
+		NS:          command.Namespace{DB: oldns.DB, Collection: oldns.Collection},
+		Filter:      f,
+		Opts:        findOneOpts,
+		ReadPref:    coll.readPreference,
+		ReadConcern: coll.readConcern,
+		Session:     sess,
+		Clock:       coll.client.clock,
 	}
-	cursor, err := dispatch.Find(ctx, cmd, coll.client.topology, coll.readSelector, coll.readConcern)
+
+	cursor, err := dispatch.Find(
+		ctx, cmd,
+		coll.client.topology,
+		coll.readSelector,
+		coll.client.id,
+		coll.client.topology.SessionPool,
+	)
 	if err != nil {
 		// dispatch.Find already sets error metrics
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
@@ -975,35 +1184,33 @@ func (coll *Collection) FindOneAndDelete(ctx context.Context, filter interface{}
 		}
 	}
 
-	findOpts, err := findopt.BundleDeleteOne(opts...).Unbundle(true)
+	findOpts, sess, err := findopt.BundleDeleteOne(opts...).Unbundle(true)
 	if err != nil {
 		return &DocumentResult{err: err}
 	}
 
-	wc := coll.writeConcern
-	index := -1
-	for i, opt := range findOpts {
-		if converted, ok := opt.(option.OptWriteConcern); ok {
-			// found write concern option
-			wc = converted.WriteConcern
-			index = i
-			break
-		}
-	}
-
-	// if a write concern option was found, remove it from the slice
-	if index != -1 {
-		findOpts = append(findOpts[:index], findOpts[index+1:]...)
+	err = coll.client.ValidSession(sess)
+	if err != nil {
+		return &DocumentResult{err: err}
 	}
 
 	oldns := coll.namespace()
 	cmd := command.FindOneAndDelete{
-		NS:    command.Namespace{DB: oldns.DB, Collection: oldns.Collection},
-		Query: f,
-		Opts:  findOpts,
+		NS:           command.Namespace{DB: oldns.DB, Collection: oldns.Collection},
+		Query:        f,
+		Opts:         findOpts,
+		WriteConcern: coll.writeConcern,
+		Session:      sess,
+		Clock:        coll.client.clock,
 	}
 
-	res, err := dispatch.FindOneAndDelete(ctx, cmd, coll.client.topology, coll.writeSelector, wc)
+	res, err := dispatch.FindOneAndDelete(
+		ctx, cmd,
+		coll.client.topology,
+		coll.writeSelector,
+		coll.client.id,
+		coll.client.topology.SessionPool,
+	)
 	if err != nil {
 		// dispatch.FindOneAndDelete already sets error metrics
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
@@ -1064,36 +1271,35 @@ func (coll *Collection) FindOneAndReplace(ctx context.Context, filter interface{
 		return &DocumentResult{err: errors.New("replacement document cannot contains keys beginning with '$")}
 	}
 
-	findOpts, err := findopt.BundleReplaceOne(opts...).Unbundle(true)
+	findOpts, sess, err := findopt.BundleReplaceOne(opts...).Unbundle(true)
 
 	if err != nil {
 		return &DocumentResult{err: err}
 	}
 
-	wc := coll.writeConcern
-	index := -1
-	for i, opt := range findOpts {
-		if converted, ok := opt.(option.OptWriteConcern); ok {
-			// found write concern option
-			wc = converted.WriteConcern
-			index = i
-			break
-		}
-	}
-
-	// if a write concern option was found, remove it from the slice
-	if index != -1 {
-		findOpts = append(findOpts[:index], findOpts[index+1:]...)
+	err = coll.client.ValidSession(sess)
+	if err != nil {
+		return &DocumentResult{err: err}
 	}
 
 	oldns := coll.namespace()
 	cmd := command.FindOneAndReplace{
-		NS:          command.Namespace{DB: oldns.DB, Collection: oldns.Collection},
-		Query:       f,
-		Replacement: r,
-		Opts:        findOpts,
+		NS:           command.Namespace{DB: oldns.DB, Collection: oldns.Collection},
+		Query:        f,
+		Replacement:  r,
+		Opts:         findOpts,
+		WriteConcern: coll.writeConcern,
+		Session:      sess,
+		Clock:        coll.client.clock,
 	}
-	res, err := dispatch.FindOneAndReplace(ctx, cmd, coll.client.topology, coll.writeSelector, wc)
+
+	res, err := dispatch.FindOneAndReplace(
+		ctx, cmd,
+		coll.client.topology,
+		coll.writeSelector,
+		coll.client.id,
+		coll.client.topology.SessionPool,
+	)
 	if err != nil {
 		// dispatch.FindOneAndReplace already sets error metrics
 		return &DocumentResult{err: err}
@@ -1152,35 +1358,34 @@ func (coll *Collection) FindOneAndUpdate(ctx context.Context, filter interface{}
 		return &DocumentResult{err: errors.New("update document must contain key beginning with '$")}
 	}
 
-	findOpts, err := findopt.BundleUpdateOne(opts...).Unbundle(true)
+	findOpts, sess, err := findopt.BundleUpdateOne(opts...).Unbundle(true)
 	if err != nil {
 		return &DocumentResult{err: err}
 	}
 
-	wc := coll.writeConcern
-	index := -1
-	for i, opt := range findOpts {
-		if converted, ok := opt.(option.OptWriteConcern); ok {
-			// found write concern option
-			wc = converted.WriteConcern
-			index = i
-			break
-		}
-	}
-
-	// if a write concern option was found, remove it from the slice
-	if index != -1 {
-		findOpts = append(findOpts[:index], findOpts[index+1:]...)
+	err = coll.client.ValidSession(sess)
+	if err != nil {
+		return &DocumentResult{err: err}
 	}
 
 	oldns := coll.namespace()
 	cmd := command.FindOneAndUpdate{
-		NS:     command.Namespace{DB: oldns.DB, Collection: oldns.Collection},
-		Query:  f,
-		Update: u,
-		Opts:   findOpts,
+		NS:           command.Namespace{DB: oldns.DB, Collection: oldns.Collection},
+		Query:        f,
+		Update:       u,
+		Opts:         findOpts,
+		WriteConcern: coll.writeConcern,
+		Session:      sess,
+		Clock:        coll.client.clock,
 	}
-	res, err := dispatch.FindOneAndUpdate(ctx, cmd, coll.client.topology, coll.writeSelector, wc)
+
+	res, err := dispatch.FindOneAndUpdate(
+		ctx, cmd,
+		coll.client.topology,
+		coll.writeSelector,
+		coll.client.id,
+		coll.client.topology.SessionPool,
+	)
 	if err != nil {
 		// dispatch.FindOneAndUpdate already sets error metrics.
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
@@ -1218,7 +1423,7 @@ func (coll *Collection) Indexes() IndexView {
 }
 
 // Drop drops this collection from database.
-func (coll *Collection) Drop(ctx context.Context) error {
+func (coll *Collection) Drop(ctx context.Context, opts ...dropcollopt.DropColl) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -1231,11 +1436,32 @@ func (coll *Collection) Drop(ctx context.Context) error {
 		span.End()
 	}()
 
-	cmd := command.DropCollection{
-		DB:         coll.db.name,
-		Collection: coll.name,
+	var sess *session.Client
+	for _, opt := range opts {
+		if conv, ok := opt.(dropcollopt.DropCollSession); ok {
+			sess = conv.ConvertDropCollSession()
+		}
 	}
-	_, err := dispatch.DropCollection(ctx, cmd, coll.client.topology, coll.writeSelector)
+
+	err := coll.client.ValidSession(sess)
+	if err != nil {
+		return err
+	}
+
+	cmd := command.DropCollection{
+		DB:           coll.db.name,
+		Collection:   coll.name,
+		WriteConcern: coll.writeConcern,
+		Session:      sess,
+		Clock:        coll.client.clock,
+	}
+	_, err = dispatch.DropCollection(
+		ctx, cmd,
+		coll.client.topology,
+		coll.writeSelector,
+		coll.client.id,
+		coll.client.topology.SessionPool,
+	)
 	if err != nil && !command.IsNotFound(err) {
 		ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "dispatch_dropcollection"))
 		stats.Record(ctx, observability.MErrors.M(1))

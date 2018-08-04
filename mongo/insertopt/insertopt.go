@@ -10,22 +10,44 @@ import (
 	"reflect"
 
 	"github.com/mongodb/mongo-go-driver/core/option"
-	"github.com/mongodb/mongo-go-driver/core/writeconcern"
+	"github.com/mongodb/mongo-go-driver/core/session"
 )
 
 var insertOneBundle = new(OneBundle)
 var insertManyBundle = new(ManyBundle)
 
-// One is options for InsertInsertOne
+// One represents all passable params for the insertOne() function.
 type One interface {
 	insertOne()
+}
+
+// OneOption represents the options for the insertOne() function.
+type OneOption interface {
+	One
 	ConvertInsertOption() option.InsertOptioner
 }
 
-// Many is options for InsertInsertMany
+// OneSession is the session for the insertOne() function
+type OneSession interface {
+	One
+	ConvertInsertSession() *session.Client
+}
+
+// Many represents all passable params for the insertMany() function.
 type Many interface {
 	insertMany()
+}
+
+// ManyOption represents the options for the insertMany() function.
+type ManyOption interface {
+	Many
 	ConvertInsertOption() option.InsertOptioner
+}
+
+// ManySession is the session for the insertMany() function
+type ManySession interface {
+	Many
+	ConvertInsertSession() *session.Client
 }
 
 // OneBundle is a bundle of One options
@@ -66,16 +88,6 @@ func (ob *OneBundle) BypassDocumentValidation(b bool) *OneBundle {
 	return bundle
 }
 
-// WriteConcern adds an option to specify a write concern
-func (ob *OneBundle) WriteConcern(wc *writeconcern.WriteConcern) *OneBundle {
-	bundle := &OneBundle{
-		option: WriteConcern(wc),
-		next:   ob,
-	}
-
-	return bundle
-}
-
 // Calculates the total length of a bundle, accounting for nested bundles.
 func (ob *OneBundle) bundleLength() int {
 	if ob == nil {
@@ -83,14 +95,19 @@ func (ob *OneBundle) bundleLength() int {
 	}
 
 	bundleLen := 0
-	for ; ob != nil && ob.option != nil; ob = ob.next {
+	for ; ob != nil; ob = ob.next {
+		if ob.option == nil {
+			continue
+		}
 		if converted, ok := ob.option.(*OneBundle); ok {
 			// nested bundle
 			bundleLen += converted.bundleLength()
 			continue
 		}
 
-		bundleLen++
+		if _, ok := ob.option.(OneSession); !ok {
+			bundleLen++
+		}
 	}
 
 	return bundleLen
@@ -103,14 +120,14 @@ func (ob *OneBundle) bundleLength() int {
 // if we actually deduplicate options.
 //
 // Since a bundle can be recursive, this method will unwind all recursive bundles.
-func (ob *OneBundle) Unbundle(deduplicate bool) ([]option.InsertOptioner, error) {
-	options, err := ob.unbundle()
+func (ob *OneBundle) Unbundle(deduplicate bool) ([]option.InsertOptioner, *session.Client, error) {
+	options, sess, err := ob.unbundle()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	if !deduplicate {
-		return options, nil
+		return options, sess, nil
 	}
 
 	// iterate backwards and make dedup slice
@@ -129,26 +146,34 @@ func (ob *OneBundle) Unbundle(deduplicate bool) ([]option.InsertOptioner, error)
 		optionsSet[optionType] = struct{}{}
 	}
 
-	return options, nil
+	return options, sess, nil
 }
 
 // Helper that recursively unwraps bundle into slice of options
-func (ob *OneBundle) unbundle() ([]option.InsertOptioner, error) {
+func (ob *OneBundle) unbundle() ([]option.InsertOptioner, *session.Client, error) {
 	if ob == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 
+	var sess *session.Client
 	listLen := ob.bundleLength()
 
 	options := make([]option.InsertOptioner, listLen)
 	index := listLen - 1
 
-	for listHead := ob; listHead != nil && listHead.option != nil; listHead = listHead.next {
+	for listHead := ob; listHead != nil; listHead = listHead.next {
+		if listHead.option == nil {
+			continue
+		}
+
 		// if the current option is a nested bundle, Unbundle it and add its options to the current array
 		if converted, ok := listHead.option.(*OneBundle); ok {
-			nestedOptions, err := converted.unbundle()
+			nestedOptions, s, err := converted.unbundle()
 			if err != nil {
-				return nil, err
+				return nil, nil, err
+			}
+			if s != nil && sess == nil {
+				sess = s
 			}
 
 			// where to start inserting nested options
@@ -163,11 +188,18 @@ func (ob *OneBundle) unbundle() ([]option.InsertOptioner, error) {
 			continue
 		}
 
-		options[index] = listHead.option.ConvertInsertOption()
-		index--
+		switch t := listHead.option.(type) {
+		case OneOption:
+			options[index] = t.ConvertInsertOption()
+			index--
+		case OneSession:
+			if sess == nil {
+				sess = t.ConvertInsertSession()
+			}
+		}
 	}
 
-	return options, nil
+	return options, sess, nil
 }
 
 // String implements the Stringer interface
@@ -183,7 +215,9 @@ func (ob *OneBundle) String() string {
 			continue
 		}
 
-		str += head.option.ConvertInsertOption().String() + "\n"
+		if conv, ok := head.option.(OneOption); !ok {
+			str += conv.ConvertInsertOption().String() + "\n"
+		}
 	}
 
 	return str
@@ -237,16 +271,6 @@ func (mb *ManyBundle) Ordered(b bool) *ManyBundle {
 	return bundle
 }
 
-// WriteConcern adds an option to specify a write concern
-func (mb *ManyBundle) WriteConcern(wc *writeconcern.WriteConcern) *ManyBundle {
-	bundle := &ManyBundle{
-		option: WriteConcern(wc),
-		next:   mb,
-	}
-
-	return bundle
-}
-
 // Calculates the total length of a bundle, accounting for nested bundles.
 func (mb *ManyBundle) bundleLength() int {
 	if mb == nil {
@@ -254,14 +278,19 @@ func (mb *ManyBundle) bundleLength() int {
 	}
 
 	bundleLen := 0
-	for ; mb != nil && mb.option != nil; mb = mb.next {
+	for ; mb != nil; mb = mb.next {
+		if mb.option == nil {
+			continue
+		}
 		if converted, ok := mb.option.(*ManyBundle); ok {
 			// nested bundle
 			bundleLen += converted.bundleLength()
 			continue
 		}
 
-		bundleLen++
+		if _, ok := mb.option.(InsertSessionOpt); !ok {
+			bundleLen++
+		}
 	}
 
 	return bundleLen
@@ -274,14 +303,14 @@ func (mb *ManyBundle) bundleLength() int {
 // if we actually deduplicate options.
 //
 // Since a bundle can be recursive, this method will unwind all recursive bundles.
-func (mb *ManyBundle) Unbundle(deduplicate bool) ([]option.InsertOptioner, error) {
-	options, err := mb.unbundle()
+func (mb *ManyBundle) Unbundle(deduplicate bool) ([]option.InsertOptioner, *session.Client, error) {
+	options, sess, err := mb.unbundle()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	if !deduplicate {
-		return options, nil
+		return options, sess, nil
 	}
 
 	// iterate backwards and make dedup slice
@@ -300,26 +329,34 @@ func (mb *ManyBundle) Unbundle(deduplicate bool) ([]option.InsertOptioner, error
 		optionsSet[optionType] = struct{}{}
 	}
 
-	return options, nil
+	return options, sess, nil
 }
 
 // Helper that recursively unwraps bundle into slice of options
-func (mb *ManyBundle) unbundle() ([]option.InsertOptioner, error) {
+func (mb *ManyBundle) unbundle() ([]option.InsertOptioner, *session.Client, error) {
 	if mb == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 
+	var sess *session.Client
 	listLen := mb.bundleLength()
 
 	options := make([]option.InsertOptioner, listLen)
 	index := listLen - 1
 
-	for listHead := mb; listHead != nil && listHead.option != nil; listHead = listHead.next {
+	for listHead := mb; listHead != nil; listHead = listHead.next {
+		if listHead.option == nil {
+			continue
+		}
+
 		// if the current option is a nested bundle, Unbundle it and add its options to the current array
 		if converted, ok := listHead.option.(*ManyBundle); ok {
-			nestedOptions, err := converted.unbundle()
+			nestedOptions, s, err := converted.unbundle()
 			if err != nil {
-				return nil, err
+				return nil, nil, err
+			}
+			if s != nil && sess == nil {
+				sess = s
 			}
 
 			// where to start inserting nested options
@@ -334,11 +371,18 @@ func (mb *ManyBundle) unbundle() ([]option.InsertOptioner, error) {
 			continue
 		}
 
-		options[index] = listHead.option.ConvertInsertOption()
-		index--
+		switch t := listHead.option.(type) {
+		case ManyOption:
+			options[index] = t.ConvertInsertOption()
+			index--
+		case ManySession:
+			if sess == nil {
+				sess = t.ConvertInsertSession()
+			}
+		}
 	}
 
-	return options, nil
+	return options, sess, nil
 }
 
 // String implements the Stringer interface
@@ -354,7 +398,9 @@ func (mb *ManyBundle) String() string {
 			continue
 		}
 
-		str += head.option.ConvertInsertOption().String() + "\n"
+		if conv, ok := head.option.(ManyOption); !ok {
+			str += conv.ConvertInsertOption().String() + "\n"
+		}
 	}
 
 	return str
@@ -370,21 +416,11 @@ func Ordered(b bool) OptOrdered {
 	return OptOrdered(b)
 }
 
-// WriteConcern specifies a write concern
-func WriteConcern(wc *writeconcern.WriteConcern) OptWriteConcern {
-	return OptWriteConcern{
-		WriteConcern: wc,
-	}
-}
-
 // OptBypassDocumentValidation allows the write to opt-out of the document-level validation.
 type OptBypassDocumentValidation option.OptBypassDocumentValidation
 
 // OptOrdered if true and insert fails, returns without performing remaining writes, otherwise continues
 type OptOrdered option.OptOrdered
-
-// OptWriteConcern specifies a write concern
-type OptWriteConcern option.OptWriteConcern
 
 func (OptBypassDocumentValidation) insertMany() {}
 
@@ -395,18 +431,20 @@ func (opt OptBypassDocumentValidation) ConvertInsertOption() option.InsertOption
 	return option.OptBypassDocumentValidation(opt)
 }
 
-func (OptWriteConcern) insertOne() {}
-
-func (OptWriteConcern) insertMany() {}
-
-// ConvertInsertOption implements the One,Many interface
-func (opt OptWriteConcern) ConvertInsertOption() option.InsertOptioner {
-	return option.OptWriteConcern(opt)
-}
-
 func (OptOrdered) insertMany() {}
 
 // ConvertInsertOption implements the Many interface
 func (opt OptOrdered) ConvertInsertOption() option.InsertOptioner {
 	return option.OptOrdered(opt)
+}
+
+// InsertSessionOpt is a one,many session option.
+type InsertSessionOpt struct{}
+
+func (InsertSessionOpt) insertOne()  {}
+func (InsertSessionOpt) insertMany() {}
+
+// ConvertInsertSession implements the InsertSession interface.
+func (opt InsertSessionOpt) ConvertInsertSession() *session.Client {
+	return nil
 }

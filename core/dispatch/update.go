@@ -12,7 +12,9 @@ import (
 	"github.com/mongodb/mongo-go-driver/core/command"
 	"github.com/mongodb/mongo-go-driver/core/description"
 	"github.com/mongodb/mongo-go-driver/core/result"
+	"github.com/mongodb/mongo-go-driver/core/session"
 	"github.com/mongodb/mongo-go-driver/core/topology"
+	"github.com/mongodb/mongo-go-driver/core/uuid"
 	"github.com/mongodb/mongo-go-driver/core/writeconcern"
 
 	"github.com/mongodb/mongo-go-driver/internal/observability"
@@ -28,7 +30,8 @@ func Update(
 	cmd command.Update,
 	topo *topology.Topology,
 	selector description.ServerSelector,
-	wc *writeconcern.WriteConcern,
+	clientID uuid.UUID,
+	pool *session.Pool,
 ) (result.Update, error) {
 
 	ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyMethod, "update"))
@@ -43,19 +46,6 @@ func Update(
 		return result.Update{}, err
 	}
 
-	acknowledged := true
-	if wc != nil {
-		opt, err := writeConcernOption(wc)
-		if err != nil {
-			ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "write"))
-			stats.Record(ctx, observability.MErrors.M(1))
-			span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
-			return result.Update{}, err
-		}
-		cmd.Opts = append(cmd.Opts, opt)
-		acknowledged = wc.Acknowledged()
-	}
-
 	desc := ss.Description()
 	span.Annotatef(nil, "Starting ss.Connection")
 	conn, err := ss.Connection(ctx)
@@ -67,18 +57,29 @@ func Update(
 		return result.Update{}, err
 	}
 
-	if !acknowledged {
+	if !writeconcern.AckWrite(cmd.WriteConcern) {
 		go func() {
 			defer func() { _ = recover() }()
 			defer conn.Close()
+
 			_, _ = cmd.RoundTrip(ctx, desc, conn)
 		}()
 		ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "write"))
 		stats.Record(ctx, observability.MErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: "Unacknowledged writes"})
-		return result.Update{}, ErrUnacknowledgedWrite
+
+		return result.Update{}, command.ErrUnacknowledgedWrite
 	}
 	defer conn.Close()
+
+	// If no explicit session and deployment supports sessions, start implicit session.
+	if cmd.Session == nil && topo.SupportsSessions() {
+		cmd.Session, err = session.NewClientSession(pool, clientID, session.Implicit)
+		if err != nil {
+			return result.Update{}, err
+		}
+		defer cmd.Session.EndSession()
+	}
 
 	span.Annotatef(nil, "Invoking cmd.RoundTrip")
 	ures, err := cmd.RoundTrip(ctx, desc, conn)

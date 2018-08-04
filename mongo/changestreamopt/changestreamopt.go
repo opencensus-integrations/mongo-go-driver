@@ -7,16 +7,27 @@ import (
 
 	"github.com/mongodb/mongo-go-driver/bson"
 	"github.com/mongodb/mongo-go-driver/core/option"
-	"github.com/mongodb/mongo-go-driver/core/readconcern"
+	"github.com/mongodb/mongo-go-driver/core/session"
 	"github.com/mongodb/mongo-go-driver/mongo/mongoopt"
 )
 
 var csBundle = new(ChangeStreamBundle)
 
-// ChangeStream is options for the changeStream()() function.
+// ChangeStream represents all passable params for the changeStream() function.
 type ChangeStream interface {
 	changeStream()
+}
+
+// ChangeStreamOption represents the options for the changeStream() function.
+type ChangeStreamOption interface {
+	ChangeStream
 	ConvertChangeStreamOption() option.ChangeStreamOptioner
+}
+
+// ChangeStreamSession is the session for the changeStream() function
+type ChangeStreamSession interface {
+	ChangeStream
+	ConvertChangeStreamSession() *session.Client
 }
 
 // ChangeStreamBundle is a bundle of ChangeStream options
@@ -88,16 +99,6 @@ func (csb *ChangeStreamBundle) MaxAwaitTime(d time.Duration) *ChangeStreamBundle
 	return bundle
 }
 
-// ReadConcern specifies a read concern.
-func (csb *ChangeStreamBundle) ReadConcern(rc *readconcern.ReadConcern) *ChangeStreamBundle {
-	bundle := &ChangeStreamBundle{
-		option: ReadConcern(rc),
-		next:   csb,
-	}
-
-	return bundle
-}
-
 // ResumeAfter specifies whether the change stream should be resumed after stopping.
 func (csb *ChangeStreamBundle) ResumeAfter(d *bson.Document) *ChangeStreamBundle {
 	bundle := &ChangeStreamBundle{
@@ -109,15 +110,15 @@ func (csb *ChangeStreamBundle) ResumeAfter(d *bson.Document) *ChangeStreamBundle
 }
 
 // Unbundle transforms a bundle into a slice of options, optionally deduplicating
-func (csb *ChangeStreamBundle) Unbundle(deduplicate bool) ([]option.ChangeStreamOptioner, error) {
+func (csb *ChangeStreamBundle) Unbundle(deduplicate bool) ([]option.ChangeStreamOptioner, *session.Client, error) {
 
-	options, err := csb.unbundle()
+	options, sess, err := csb.unbundle()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	if !deduplicate {
-		return options, nil
+		return options, sess, nil
 	}
 
 	// iterate backwards and make dedup slice
@@ -136,7 +137,7 @@ func (csb *ChangeStreamBundle) Unbundle(deduplicate bool) ([]option.ChangeStream
 		optionsSet[optionType] = struct{}{}
 	}
 
-	return options, nil
+	return options, sess, nil
 }
 
 // Calculates the total length of a bundle, accounting for nested bundles.
@@ -146,36 +147,49 @@ func (csb *ChangeStreamBundle) bundleLength() int {
 	}
 
 	bundleLen := 0
-	for ; csb != nil && csb.option != nil; csb = csb.next {
+	for ; csb != nil; csb = csb.next {
+		if csb.option == nil {
+			continue
+		}
 		if converted, ok := csb.option.(*ChangeStreamBundle); ok {
 			// nested bundle
 			bundleLen += converted.bundleLength()
 			continue
 		}
 
-		bundleLen++
+		if _, ok := csb.option.(ChangeStreamSessionOpt); !ok {
+			bundleLen++
+		}
 	}
 
 	return bundleLen
 }
 
 // Helper that recursively unwraps bundle into slice of options
-func (csb *ChangeStreamBundle) unbundle() ([]option.ChangeStreamOptioner, error) {
+func (csb *ChangeStreamBundle) unbundle() ([]option.ChangeStreamOptioner, *session.Client, error) {
 	if csb == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 
+	var sess *session.Client
 	listLen := csb.bundleLength()
 
 	options := make([]option.ChangeStreamOptioner, listLen)
 	index := listLen - 1
 
-	for listHead := csb; listHead != nil && listHead.option != nil; listHead = listHead.next {
+	for listHead := csb; listHead != nil; listHead = listHead.next {
+		if listHead.option == nil {
+			continue
+		}
+
 		// if the current option is a nested bundle, Unbundle it and add its options to the current array
 		if converted, ok := listHead.option.(*ChangeStreamBundle); ok {
-			nestedOptions, err := converted.unbundle()
+			nestedOptions, s, err := converted.unbundle()
 			if err != nil {
-				return nil, err
+				return nil, nil, err
+			}
+			if s != nil && sess == nil {
+				sess = s
 			}
 
 			// where to start inserting nested options
@@ -190,11 +204,18 @@ func (csb *ChangeStreamBundle) unbundle() ([]option.ChangeStreamOptioner, error)
 			continue
 		}
 
-		options[index] = listHead.option.ConvertChangeStreamOption()
-		index--
+		switch t := listHead.option.(type) {
+		case ChangeStreamOption:
+			options[index] = t.ConvertChangeStreamOption()
+			index--
+		case ChangeStreamSession:
+			if sess == nil {
+				sess = t.ConvertChangeStreamSession()
+			}
+		}
 	}
 
-	return options, nil
+	return options, sess, nil
 }
 
 // String implements the Stringer interface
@@ -210,7 +231,9 @@ func (csb *ChangeStreamBundle) String() string {
 			continue
 		}
 
-		str += head.option.ConvertChangeStreamOption().String() + "\n"
+		if conv, ok := head.option.(ChangeStreamOption); !ok {
+			str += conv.ConvertChangeStreamOption().String() + "\n"
+		}
 	}
 
 	return str
@@ -234,13 +257,6 @@ func FullDocument(fd mongoopt.FullDocument) OptFullDocument {
 // MaxAwaitTime specifies the max amount of time for the server to wait on new documents.
 func MaxAwaitTime(d time.Duration) OptMaxAwaitTime {
 	return OptMaxAwaitTime(d)
-}
-
-// ReadConcern specifies the read concern.
-func ReadConcern(rc *readconcern.ReadConcern) OptReadConcern {
-	return OptReadConcern{
-		ReadConcern: rc,
-	}
 }
 
 // ResumeAfter specifies if a change stream should be resumed after stopping.
@@ -290,16 +306,6 @@ func (opt OptMaxAwaitTime) ConvertChangeStreamOption() option.ChangeStreamOption
 	return option.OptMaxAwaitTime(opt)
 }
 
-// OptReadConcern specifies a read concern.
-type OptReadConcern option.OptReadConcern
-
-func (OptReadConcern) changeStream() {}
-
-// ConvertChangeStreamOption implements the ChangeStream interface.
-func (opt OptReadConcern) ConvertChangeStreamOption() option.ChangeStreamOptioner {
-	return option.OptReadConcern(opt)
-}
-
 // OptResumeAfter specifies if the stream should be resumed after stopping.
 type OptResumeAfter option.OptResumeAfter
 
@@ -308,4 +314,14 @@ func (OptResumeAfter) changeStream() {}
 // ConvertChangeStreamOption implements the ChangeStream interface.
 func (opt OptResumeAfter) ConvertChangeStreamOption() option.ChangeStreamOptioner {
 	return option.OptResumeAfter(opt)
+}
+
+// ChangeStreamSessionOpt is an count session option.
+type ChangeStreamSessionOpt struct{}
+
+func (ChangeStreamSessionOpt) changeStream() {}
+
+// ConvertChangeStreamSession implements the ChangeStreamSession interface.
+func (ChangeStreamSessionOpt) ConvertChangeStreamSession() *session.Client {
+	return nil
 }

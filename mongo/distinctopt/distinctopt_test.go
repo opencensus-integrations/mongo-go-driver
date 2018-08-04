@@ -130,13 +130,17 @@ func TestDistinctOpt(t *testing.T) {
 			Locale: "string locale",
 		}
 
-		opts := []Distinct{
+		opts := []DistinctOption{
 			Collation(c),
 			MaxTime(5000),
 		}
-		bundle := BundleDistinct(opts...)
+		params := make([]Distinct, len(opts))
+		for i := range opts {
+			params[i] = opts[i]
+		}
+		bundle := BundleDistinct(params...)
 
-		deleteOpts, err := bundle.Unbundle(true)
+		deleteOpts, _, err := bundle.Unbundle(true)
 		testhelpers.RequireNil(t, err, "got non-nill error from unbundle: %s", err)
 
 		if len(deleteOpts) != len(opts) {
@@ -147,6 +151,23 @@ func TestDistinctOpt(t *testing.T) {
 			if !reflect.DeepEqual(opt.ConvertDistinctOption(), deleteOpts[i]) {
 				t.Errorf("opt mismatch. expected %#v, got %#v", opt, deleteOpts[i])
 			}
+		}
+	})
+
+	t.Run("Nil Option Bundle", func(t *testing.T) {
+		sess := DistinctSessionOpt{}
+		opts, _, err := BundleDistinct(MaxTime(1), BundleDistinct(nil), sess, nil).unbundle()
+		testhelpers.RequireNil(t, err, "got non-nil error from unbundle: %s", err)
+
+		if len(opts) != 1 {
+			t.Errorf("expected bundle length 1. got: %d", len(opts))
+		}
+
+		opts, _, err = BundleDistinct(nil, sess, BundleDistinct(nil), MaxTime(1)).unbundle()
+		testhelpers.RequireNil(t, err, "got non-nil error from unbundle: %s", err)
+
+		if len(opts) != 1 {
+			t.Errorf("expected bundle length 1. got: %d", len(opts))
 		}
 	})
 
@@ -188,7 +209,7 @@ func TestDistinctOpt(t *testing.T) {
 
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
-				options, err := tc.bundle.Unbundle(tc.dedup)
+				options, _, err := tc.bundle.Unbundle(tc.dedup)
 
 				testhelpers.RequireNil(t, err, "got non-nill error from unbundle: %s", err)
 

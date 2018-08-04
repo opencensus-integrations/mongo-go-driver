@@ -13,7 +13,9 @@ import (
 	"github.com/mongodb/mongo-go-driver/core/description"
 	"github.com/mongodb/mongo-go-driver/core/option"
 	"github.com/mongodb/mongo-go-driver/core/result"
+	"github.com/mongodb/mongo-go-driver/core/session"
 	"github.com/mongodb/mongo-go-driver/core/wiremessage"
+	"github.com/mongodb/mongo-go-driver/core/writeconcern"
 
 	"go.opencensus.io/trace"
 )
@@ -22,9 +24,12 @@ import (
 //
 // The findOneAndDelete command deletes a single document that matches a query and returns it.
 type FindOneAndDelete struct {
-	NS    Namespace
-	Query *bson.Document
-	Opts  []option.FindOneAndDeleteOptioner
+	NS           Namespace
+	Query        *bson.Document
+	Opts         []option.FindOneAndDeleteOptioner
+	WriteConcern *writeconcern.WriteConcern
+	Clock        *session.ClusterClock
+	Session      *session.Client
 
 	result result.FindAndModify
 	err    error
@@ -32,6 +37,15 @@ type FindOneAndDelete struct {
 
 // Encode will encode this command into a wire message for the given server description.
 func (f *FindOneAndDelete) Encode(desc description.SelectedServer) (wiremessage.WireMessage, error) {
+	cmd, err := f.encode(desc)
+	if err != nil {
+		return nil, err
+	}
+
+	return cmd.Encode(desc)
+}
+
+func (f *FindOneAndDelete) encode(desc description.SelectedServer) (*Write, error) {
 	if err := f.NS.Validate(); err != nil {
 		return nil, err
 	}
@@ -42,28 +56,38 @@ func (f *FindOneAndDelete) Encode(desc description.SelectedServer) (wiremessage.
 		bson.EC.Boolean("remove", true),
 	)
 
-	for _, option := range f.Opts {
-		if option == nil {
+	for _, opt := range f.Opts {
+		if opt == nil {
 			continue
 		}
-		err := option.Option(command)
+		err := opt.Option(command)
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	return (&Command{DB: f.NS.DB, Command: command, isWrite: true}).Encode(desc)
+	return &Write{
+		Clock:        f.Clock,
+		DB:           f.NS.DB,
+		Command:      command,
+		WriteConcern: f.WriteConcern,
+		Session:      f.Session,
+	}, nil
 }
 
 // Decode will decode the wire message using the provided server description. Errors during decoding
 // are deferred until either the Result or Err methods are called.
 func (f *FindOneAndDelete) Decode(desc description.SelectedServer, wm wiremessage.WireMessage) *FindOneAndDelete {
-	rdr, err := (&Command{}).Decode(desc, wm).Result()
+	rdr, err := (&Write{}).Decode(desc, wm).Result()
 	if err != nil {
 		f.err = err
 		return f
 	}
 
+	return f.decode(desc, rdr)
+}
+
+func (f *FindOneAndDelete) decode(desc description.SelectedServer, rdr bson.Reader) *FindOneAndDelete {
 	f.result, f.err = unmarshalFindAndModifyResult(rdr)
 	return f
 }
@@ -84,32 +108,23 @@ func (f *FindOneAndDelete) RoundTrip(ctx context.Context, desc description.Selec
 	ctx, span := trace.StartSpan(ctx, "mongo-go/core/command.(*FindOneAndDelete).RoundTrip")
 	defer span.End()
 
-	span.Annotatef(nil, "Invoking f.Encode")
-	wm, err := f.Encode(desc)
-	span.Annotatef(nil, "Finished f.Encode")
+	span.Annotatef(nil, "Encoding")
+	cmd, err := f.encode(desc)
+	span.Annotatef(nil, "Finished encoding")
 	if err != nil {
 		span.SetStatus(trace.Status{Message: err.Error(), Code: int32(trace.StatusCodeInternal)})
 		return result.FindAndModify{}, err
 	}
 
-	span.Annotatef(nil, "Invoking WriteWireMessage")
-	err = rw.WriteWireMessage(ctx, wm)
-	span.Annotatef(nil, "Finished invoking WriteWireMessage")
-	if err != nil {
-		span.SetStatus(trace.Status{Message: err.Error(), Code: int32(trace.StatusCodeInternal)})
-		return result.FindAndModify{}, err
-	}
-	span.Annotatef(nil, "Invoking ReadWireMessage")
-	wm, err = rw.ReadWireMessage(ctx)
-	span.Annotatef(nil, "Finished invoking ReadWireMessage")
+	rdr, err := cmd.RoundTrip(ctx, desc, rw)
 	if err != nil {
 		span.SetStatus(trace.Status{Message: err.Error(), Code: int32(trace.StatusCodeInternal)})
 		return result.FindAndModify{}, err
 	}
 
-	span.Annotatef(nil, "Invoking f.Decode")
-	rfRes, err := f.Decode(desc, wm).Result()
-	span.Annotatef(nil, "Finished invoking f.Decode")
+	span.Annotatef(nil, "Decoding")
+	rfRes, err := f.decode(desc, rdr).Result()
+	span.Annotatef(nil, "Finished decoding")
 	if err != nil {
 		span.SetStatus(trace.Status{Message: err.Error(), Code: int32(trace.StatusCodeInternal)})
 	}

@@ -11,9 +11,9 @@ import (
 
 	"github.com/mongodb/mongo-go-driver/core/command"
 	"github.com/mongodb/mongo-go-driver/core/description"
-	"github.com/mongodb/mongo-go-driver/core/option"
+	"github.com/mongodb/mongo-go-driver/core/session"
 	"github.com/mongodb/mongo-go-driver/core/topology"
-	"github.com/mongodb/mongo-go-driver/core/writeconcern"
+	"github.com/mongodb/mongo-go-driver/core/uuid"
 
 	"github.com/mongodb/mongo-go-driver/internal/observability"
 	"go.opencensus.io/stats"
@@ -28,7 +28,8 @@ func Aggregate(
 	cmd command.Aggregate,
 	topo *topology.Topology,
 	readSelector, writeSelector description.ServerSelector,
-	wc *writeconcern.WriteConcern,
+	clientID uuid.UUID,
+	pool *session.Pool,
 ) (command.Cursor, error) {
 
 	ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyMethod, "aggregate"))
@@ -39,7 +40,6 @@ func Aggregate(
 
 	var ss *topology.SelectedServer
 	var err error
-	acknowledged := true
 	switch dollarOut {
 	case true:
 		span.Annotatef(nil, "Invoking topology.SelectServer")
@@ -50,11 +50,6 @@ func Aggregate(
 			stats.Record(ctx, observability.MErrors.M(1))
 			span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 			return nil, err
-		}
-		if wc != nil {
-			opt := option.OptWriteConcern{WriteConcern: wc}
-			cmd.Opts = append(cmd.Opts, opt)
-			acknowledged = wc.Acknowledged()
 		}
 	case false:
 		span.Annotatef(nil, "Invoking topology.SelectServer")
@@ -76,26 +71,18 @@ func Aggregate(
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return nil, err
 	}
-
-	if !acknowledged {
-		go func() {
-			defer func() { _ = recover() }()
-			defer conn.Close()
-			_, _ = cmd.RoundTrip(ctx, desc, ss, conn)
-		}()
-		ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "write"))
-		stats.Record(ctx, observability.MErrors.M(1))
-		return nil, ErrUnacknowledgedWrite
-	}
 	defer conn.Close()
 
-	span.Annotatef(nil, "Invoking cmd.RoundTrip")
-	cur, err := cmd.RoundTrip(ctx, desc, ss, conn)
-	span.Annotatef(nil, "Finished invoking cmd.RoundTrip")
-	if err != nil {
-		ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "roundtrip"))
-		stats.Record(ctx, observability.MErrors.M(1))
-		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
+	// If no explicit session and deployment supports sessions, start implicit session.
+	if cmd.Session == nil && topo.SupportsSessions() {
+		cmd.Session, err = session.NewClientSession(pool, clientID, session.Implicit)
+		if err != nil {
+			ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "session_newclientsession"))
+			stats.Record(ctx, observability.MErrors.M(1))
+			span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
+			return nil, err
+		}
 	}
-	return cur, err
+
+	return cmd.RoundTrip(ctx, desc, ss, conn)
 }

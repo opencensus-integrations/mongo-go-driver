@@ -9,9 +9,9 @@ package dispatch
 import (
 	"context"
 
-	"github.com/mongodb/mongo-go-driver/bson"
 	"github.com/mongodb/mongo-go-driver/core/command"
 	"github.com/mongodb/mongo-go-driver/core/description"
+	"github.com/mongodb/mongo-go-driver/core/result"
 	"github.com/mongodb/mongo-go-driver/core/topology"
 
 	"github.com/mongodb/mongo-go-driver/internal/observability"
@@ -20,14 +20,14 @@ import (
 	"go.opencensus.io/trace"
 )
 
-// Command handles the full cycle dispatch and execution of a command against the provided
+// EndSessions handles the full cycle dispatch and execution of an endSessions command against the provided
 // topology.
-func Command(
+func EndSessions(
 	ctx context.Context,
-	cmd command.Command,
+	cmd command.EndSessions,
 	topo *topology.Topology,
 	selector description.ServerSelector,
-) (bson.Reader, error) {
+) ([]result.EndSessions, []error) {
 
 	ctx, _ = tag.New(ctx, tag.Insert(observability.KeyMethod, "command"))
 	ctx, span := trace.StartSpan(ctx, "mongo-go/core/dispatch.Command")
@@ -38,7 +38,7 @@ func Command(
 		ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "topo_selectserver"))
 		stats.Record(ctx, observability.MErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
-		return nil, err
+		return nil, []error{err}
 	}
 
 	conn, err := ss.Connection(ctx)
@@ -46,15 +46,15 @@ func Command(
 		ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "connection"))
 		stats.Record(ctx, observability.MErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
-		return nil, err
+		return nil, []error{err}
 	}
-	defer conn.Close()
 
-	br, err := cmd.RoundTrip(ctx, ss.Description(), conn)
-	if err != nil {
+	br, errs := cmd.RoundTrip(ctx, ss.Description(), conn)
+	if len(errs) != 0 {
 		ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "roundtrip"))
 		stats.Record(ctx, observability.MErrors.M(1))
-		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
+		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: errs[0].Error()})
 	}
-	return br, err
+	return br, errs
+
 }

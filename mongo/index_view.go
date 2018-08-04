@@ -48,19 +48,36 @@ func (iv IndexView) List(ctx context.Context, opts ...indexopt.List) (Cursor, er
 		span.End()
 	}()
 
-	listOpts, err := indexopt.BundleList(opts...).Unbundle(true)
+	listOpts, sess, err := indexopt.BundleList(opts...).Unbundle(true)
 	if err != nil {
 		return nil, err
 	}
 
-	listCmd := command.ListIndexes{NS: iv.coll.namespace(), Opts: listOpts}
+	err = iv.coll.client.ValidSession(sess)
+	if err != nil {
+		return nil, err
+	}
 
-	cur, err := dispatch.ListIndexes(ctx, listCmd, iv.coll.client.topology, iv.coll.writeSelector)
+	listCmd := command.ListIndexes{
+		NS:      iv.coll.namespace(),
+		Opts:    listOpts,
+		Session: sess,
+		Clock:   iv.coll.client.clock,
+	}
+
+        cur, err := dispatch.ListIndexes(
+		ctx, listCmd,
+		iv.coll.client.topology,
+		iv.coll.writeSelector,
+		iv.coll.client.id,
+		iv.coll.client.topology.SessionPool,
+	)
 	if err != nil {
 		ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "dispatch_listindexes"))
 		stats.Record(ctx, observability.MErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 	}
+
 	return cur, err
 }
 
@@ -124,14 +141,31 @@ func (iv IndexView) CreateMany(ctx context.Context, models []IndexModel, opts ..
 		indexes.Append(bson.VC.Document(index))
 	}
 
-	createOpts, err := indexopt.BundleCreate(opts...).Unbundle(true)
+	createOpts, sess, err := indexopt.BundleCreate(opts...).Unbundle(true)
 	if err != nil {
 		return nil, err
 	}
 
-	cmd := command.CreateIndexes{NS: iv.coll.namespace(), Indexes: indexes, Opts: createOpts}
+	err = iv.coll.client.ValidSession(sess)
+	if err != nil {
+		return nil, err
+	}
 
-	_, err = dispatch.CreateIndexes(ctx, cmd, iv.coll.client.topology, iv.coll.writeSelector)
+	cmd := command.CreateIndexes{
+		NS:      iv.coll.namespace(),
+		Indexes: indexes,
+		Opts:    createOpts,
+		Session: sess,
+		Clock:   iv.coll.client.clock,
+	}
+
+	_, err = dispatch.CreateIndexes(
+		ctx, cmd,
+		iv.coll.client.topology,
+		iv.coll.writeSelector,
+		iv.coll.client.id,
+		iv.coll.client.topology.SessionPool,
+	)
 	if err != nil {
 		ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "dispatch_create_indexes"))
 		stats.Record(ctx, observability.MErrors.M(1))
@@ -158,14 +192,31 @@ func (iv IndexView) DropOne(ctx context.Context, name string, opts ...indexopt.D
 		return nil, ErrMultipleIndexDrop
 	}
 
-	dropOpts, err := indexopt.BundleDrop(opts...).Unbundle(true)
+	dropOpts, sess, err := indexopt.BundleDrop(opts...).Unbundle(true)
 	if err != nil {
 		return nil, err
 	}
 
-	cmd := command.DropIndexes{NS: iv.coll.namespace(), Index: name, Opts: dropOpts}
+	err = iv.coll.client.ValidSession(sess)
+	if err != nil {
+		return nil, err
+	}
 
-	return dispatch.DropIndexes(ctx, cmd, iv.coll.client.topology, iv.coll.writeSelector)
+	cmd := command.DropIndexes{
+		NS:      iv.coll.namespace(),
+		Index:   name,
+		Opts:    dropOpts,
+		Session: sess,
+		Clock:   iv.coll.client.clock,
+	}
+
+	return dispatch.DropIndexes(
+		ctx, cmd,
+		iv.coll.client.topology,
+		iv.coll.writeSelector,
+		iv.coll.client.id,
+		iv.coll.client.topology.SessionPool,
+	)
 }
 
 // DropAll drops all indexes in the collection.
@@ -178,14 +229,31 @@ func (iv IndexView) DropAll(ctx context.Context, opts ...indexopt.Drop) (bson.Re
 		span.End()
 	}()
 
-	dropOpts, err := indexopt.BundleDrop(opts...).Unbundle(true)
+	dropOpts, sess, err := indexopt.BundleDrop(opts...).Unbundle(true)
 	if err != nil {
 		return nil, err
 	}
 
-	cmd := command.DropIndexes{NS: iv.coll.namespace(), Index: "*", Opts: dropOpts}
+	err = iv.coll.client.ValidSession(sess)
+	if err != nil {
+		return nil, err
+	}
 
-	return dispatch.DropIndexes(ctx, cmd, iv.coll.client.topology, iv.coll.writeSelector)
+	cmd := command.DropIndexes{
+		NS:      iv.coll.namespace(),
+		Index:   "*",
+		Opts:    dropOpts,
+		Session: sess,
+		Clock:   iv.coll.client.clock,
+	}
+
+	return dispatch.DropIndexes(
+		ctx, cmd,
+		iv.coll.client.topology,
+		iv.coll.writeSelector,
+		iv.coll.client.id,
+		iv.coll.client.topology.SessionPool,
+	)
 }
 
 func getOrGenerateIndexName(model IndexModel) (string, error) {

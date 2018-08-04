@@ -5,15 +5,26 @@ import (
 	"time"
 
 	"github.com/mongodb/mongo-go-driver/core/option"
-	"github.com/mongodb/mongo-go-driver/core/writeconcern"
+	"github.com/mongodb/mongo-go-driver/core/session"
 )
 
 var dropBundle = new(DropBundle)
 
-// Drop is options for the dropIndexes command.
+// Drop represents all passable params for the drop() function.
 type Drop interface {
 	drop()
+}
+
+// DropOption represents the options for the drop() function.
+type DropOption interface {
+	Drop
 	ConvertDropOption() option.DropIndexesOptioner
+}
+
+// DropIndexSession is the session for the drop() function
+type DropIndexSession interface {
+	Drop
+	ConvertIndexSession() *session.Client
 }
 
 // DropBundle is a bundle of Drop options
@@ -43,16 +54,6 @@ func (db *DropBundle) drop() {}
 // ConvertDropOption implements the Drop interface
 func (db *DropBundle) ConvertDropOption() option.DropIndexesOptioner { return nil }
 
-// WriteConcern adds an option to specify a write concern.
-func (db *DropBundle) WriteConcern(wc *writeconcern.WriteConcern) *DropBundle {
-	bundle := &DropBundle{
-		option: WriteConcern(wc),
-		next:   db,
-	}
-
-	return bundle
-}
-
 // MaxTime adds an option to specify the maximum amount of time to allow the query to run.
 func (db *DropBundle) MaxTime(d time.Duration) *DropBundle {
 	bundle := &DropBundle{
@@ -68,14 +69,14 @@ func (db *DropBundle) MaxTime(d time.Duration) *DropBundle {
 //
 // The deduplicate parameter is used to determine if the bundle is just flattened or
 // if we actually deduplicate options.
-func (db *DropBundle) Unbundle(deduplicate bool) ([]option.DropIndexesOptioner, error) {
-	options, err := db.unbundle()
+func (db *DropBundle) Unbundle(deduplicate bool) ([]option.DropIndexesOptioner, *session.Client, error) {
+	options, sess, err := db.unbundle()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	if !deduplicate {
-		return options, nil
+		return options, sess, nil
 	}
 
 	// iterate backwards and make dedup slice
@@ -92,7 +93,7 @@ func (db *DropBundle) Unbundle(deduplicate bool) ([]option.DropIndexesOptioner, 
 		optionsSet[optionType] = struct{}{}
 	}
 
-	return options, nil
+	return options, sess, nil
 }
 
 // Calculates the total length of a bundle, accounting for nested bundles.
@@ -102,34 +103,48 @@ func (db *DropBundle) bundleLength() int {
 	}
 
 	bundleLen := 0
-	for ; db != nil && db.option != nil; db = db.next {
+	for ; db != nil; db = db.next {
+		if db.option == nil {
+			continue
+		}
 		if converted, ok := db.option.(*DropBundle); ok {
 			// nested bundle
 			bundleLen += converted.bundleLength()
 			continue
 		}
-		bundleLen++
+
+		if _, ok := db.option.(DropIndexSession); !ok {
+			bundleLen++
+		}
 	}
 
 	return bundleLen
 }
 
 // Helper that recursively unwraps bundle into slice of options
-func (db *DropBundle) unbundle() ([]option.DropIndexesOptioner, error) {
+func (db *DropBundle) unbundle() ([]option.DropIndexesOptioner, *session.Client, error) {
 	if db == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 
+	var sess *session.Client
 	listLen := db.bundleLength()
 	options := make([]option.DropIndexesOptioner, listLen)
 	index := listLen - 1
 
-	for listHead := db; listHead != nil && listHead.option != nil; listHead = listHead.next {
+	for listHead := db; listHead != nil; listHead = listHead.next {
+		if listHead.option == nil {
+			continue
+		}
+
 		// if the current option is a nested bundle, Unbundle it and add its options to the current array
 		if converted, ok := listHead.option.(*DropBundle); ok {
-			nestedOptions, err := converted.unbundle()
+			nestedOptions, s, err := converted.unbundle()
 			if err != nil {
-				return nil, err
+				return nil, nil, err
+			}
+			if s != nil && sess == nil {
+				sess = s
 			}
 
 			// where to start inserting nested options
@@ -143,11 +158,19 @@ func (db *DropBundle) unbundle() ([]option.DropIndexesOptioner, error) {
 			index -= len(nestedOptions)
 			continue
 		}
-		options[index] = listHead.option.ConvertDropOption()
-		index--
+
+		switch t := listHead.option.(type) {
+		case DropOption:
+			options[index] = t.ConvertDropOption()
+			index--
+		case DropIndexSession:
+			if sess == nil {
+				sess = t.ConvertIndexSession()
+			}
+		}
 	}
 
-	return options, nil
+	return options, sess, nil
 }
 
 // String implements the Stringer interface
@@ -163,7 +186,9 @@ func (db *DropBundle) String() string {
 			continue
 		}
 
-		str += head.option.ConvertDropOption().String() + "\n"
+		if conv, ok := head.option.(DropOption); !ok {
+			str += conv.ConvertDropOption().String() + "\n"
+		}
 	}
 
 	return str

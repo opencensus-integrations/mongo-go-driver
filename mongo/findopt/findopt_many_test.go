@@ -6,7 +6,6 @@ import (
 	"reflect"
 
 	"github.com/mongodb/mongo-go-driver/core/option"
-	"github.com/mongodb/mongo-go-driver/core/readconcern"
 	"github.com/mongodb/mongo-go-driver/internal/testutil/helpers"
 	"github.com/mongodb/mongo-go-driver/mongo/mongoopt"
 )
@@ -156,9 +155,8 @@ func TestFindOpt(t *testing.T) {
 		c := &mongoopt.Collation{
 			Locale: "string locale",
 		}
-		rc := readconcern.Local()
 
-		opts := []Find{
+		opts := []FindOption{
 			AllowPartialResults(true),
 			BatchSize(5),
 			Collation(c),
@@ -174,16 +172,19 @@ func TestFindOpt(t *testing.T) {
 			NoCursorTimeout(false),
 			OplogReplay(true),
 			Projection("projection for find"),
-			ReadConcern(rc),
 			ReturnKey(true),
 			ShowRecordID(false),
 			Skip(50),
 			Snapshot(false),
 			Sort("sort for find"),
 		}
-		bundle := BundleFind(opts...)
+		params := make([]Find, len(opts))
+		for i := range opts {
+			params[i] = opts[i]
+		}
+		bundle := BundleFind(params...)
 
-		deleteOpts, err := bundle.Unbundle(true)
+		deleteOpts, _, err := bundle.Unbundle(true)
 		testhelpers.RequireNil(t, err, "got non-nill error from unbundle: %s", err)
 
 		if len(deleteOpts) != len(opts) {
@@ -194,6 +195,23 @@ func TestFindOpt(t *testing.T) {
 			if !reflect.DeepEqual(opt.ConvertFindOption(), deleteOpts[i]) {
 				t.Errorf("opt mismatch. expected %#v, got %#v", opt, deleteOpts[i])
 			}
+		}
+	})
+
+	t.Run("Nil Option Bundle", func(t *testing.T) {
+		sess := FindSessionOpt{}
+		opts, _, err := BundleFind(Snapshot(true), BundleFind(nil), sess, nil).unbundle()
+		testhelpers.RequireNil(t, err, "got non-nil error from unbundle: %s", err)
+
+		if len(opts) != 1 {
+			t.Errorf("expected bundle length 1. got: %d", len(opts))
+		}
+
+		opts, _, err = BundleFind(nil, sess, BundleFind(nil), Snapshot(true)).unbundle()
+		testhelpers.RequireNil(t, err, "got non-nil error from unbundle: %s", err)
+
+		if len(opts) != 1 {
+			t.Errorf("expected bundle length 1. got: %d", len(opts))
 		}
 	})
 
@@ -235,7 +253,7 @@ func TestFindOpt(t *testing.T) {
 
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
-				options, err := tc.bundle.Unbundle(tc.dedup)
+				options, _, err := tc.bundle.Unbundle(tc.dedup)
 				testhelpers.RequireNil(t, err, "got non-nill error from unbundle: %s", err)
 
 				if len(options) != len(tc.expectedOpts) {

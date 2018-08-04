@@ -1,19 +1,36 @@
+// Copyright (C) MongoDB, Inc. 2017-present.
+//
+// Licensed under the Apache License, Version 2.0 (the "License"); you may
+// not use this file except in compliance with the License. You may obtain
+// a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
+
 package deleteopt
 
 import (
 	"reflect"
 
 	"github.com/mongodb/mongo-go-driver/core/option"
-	"github.com/mongodb/mongo-go-driver/core/writeconcern"
+	"github.com/mongodb/mongo-go-driver/core/session"
 	"github.com/mongodb/mongo-go-driver/mongo/mongoopt"
 )
 
 var deleteBundle = new(DeleteBundle)
 
-// Delete is options for the delete() function.
+// Delete represents all passable params for the delete() function.
 type Delete interface {
 	delete()
+}
+
+// DeleteOption represents the options for the delete() function.
+type DeleteOption interface {
+	Delete
 	ConvertDeleteOption() option.DeleteOptioner
+}
+
+// DeleteSession is the session for the delete() function
+type DeleteSession interface {
+	Delete
+	ConvertDeleteSession() *session.Client
 }
 
 // DeleteBundle is a bundle of Delete options
@@ -55,26 +72,16 @@ func (db *DeleteBundle) Collation(c *mongoopt.Collation) *DeleteBundle {
 	return bundle
 }
 
-// WriteConcern adds an option to specify a write concern.
-func (db *DeleteBundle) WriteConcern(wc *writeconcern.WriteConcern) *DeleteBundle {
-	bundle := &DeleteBundle{
-		option: WriteConcern(wc),
-		next:   db,
-	}
-
-	return bundle
-}
-
 // Unbundle transforms a bundle into a slice of options, optionally deduplicating
-func (db *DeleteBundle) Unbundle(deduplicate bool) ([]option.DeleteOptioner, error) {
+func (db *DeleteBundle) Unbundle(deduplicate bool) ([]option.DeleteOptioner, *session.Client, error) {
 
-	options, err := db.unbundle()
+	options, sess, err := db.unbundle()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	if !deduplicate {
-		return options, nil
+		return options, sess, nil
 	}
 
 	// iterate backwards and make dedup slice
@@ -93,7 +100,7 @@ func (db *DeleteBundle) Unbundle(deduplicate bool) ([]option.DeleteOptioner, err
 		optionsSet[optionType] = struct{}{}
 	}
 
-	return options, nil
+	return options, sess, nil
 }
 
 // Calculates the total length of a bundle, accounting for nested bundles.
@@ -103,36 +110,49 @@ func (db *DeleteBundle) bundleLength() int {
 	}
 
 	bundleLen := 0
-	for ; db != nil && db.option != nil; db = db.next {
+	for ; db != nil; db = db.next {
+		if db.option == nil {
+			continue
+		}
 		if converted, ok := db.option.(*DeleteBundle); ok {
 			// nested bundle
 			bundleLen += converted.bundleLength()
 			continue
 		}
 
-		bundleLen++
+		if _, ok := db.option.(DeleteSessionOpt); !ok {
+			bundleLen++
+		}
 	}
 
 	return bundleLen
 }
 
 // Helper that recursively unwraps bundle into slice of options
-func (db *DeleteBundle) unbundle() ([]option.DeleteOptioner, error) {
+func (db *DeleteBundle) unbundle() ([]option.DeleteOptioner, *session.Client, error) {
 	if db == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 
+	var sess *session.Client
 	listLen := db.bundleLength()
 
 	options := make([]option.DeleteOptioner, listLen)
 	index := listLen - 1
 
-	for listHead := db; listHead != nil && listHead.option != nil; listHead = listHead.next {
+	for listHead := db; listHead != nil; listHead = listHead.next {
+		if listHead.option == nil {
+			continue
+		}
+
 		// if the current option is a nested bundle, Unbundle it and add its options to the current array
 		if converted, ok := listHead.option.(*DeleteBundle); ok {
-			nestedOptions, err := converted.unbundle()
+			nestedOptions, s, err := converted.unbundle()
 			if err != nil {
-				return nil, err
+				return nil, nil, err
+			}
+			if s != nil && sess == nil {
+				sess = s
 			}
 
 			// where to start inserting nested options
@@ -147,11 +167,18 @@ func (db *DeleteBundle) unbundle() ([]option.DeleteOptioner, error) {
 			continue
 		}
 
-		options[index] = listHead.option.ConvertDeleteOption()
-		index--
+		switch t := listHead.option.(type) {
+		case DeleteOption:
+			options[index] = t.ConvertDeleteOption()
+			index--
+		case DeleteSession:
+			if sess == nil {
+				sess = t.ConvertDeleteSession()
+			}
+		}
 	}
 
-	return options, nil
+	return options, sess, nil
 }
 
 // String implements the Stringer interface
@@ -167,7 +194,9 @@ func (db *DeleteBundle) String() string {
 			continue
 		}
 
-		str += head.option.ConvertDeleteOption().String() + "\n"
+		if conv, ok := head.option.(DeleteOption); !ok {
+			str += conv.ConvertDeleteOption().String() + "\n"
+		}
 	}
 
 	return str
@@ -176,11 +205,6 @@ func (db *DeleteBundle) String() string {
 // Collation specifies a collation.
 func Collation(c *mongoopt.Collation) OptCollation {
 	return OptCollation{Collation: c.Convert()}
-}
-
-// WriteConcern specifies a write concern.
-func WriteConcern(wc *writeconcern.WriteConcern) OptWriteConcern {
-	return OptWriteConcern{wc}
 }
 
 // OptCollation specifies a collation.
@@ -193,12 +217,12 @@ func (opt OptCollation) ConvertDeleteOption() option.DeleteOptioner {
 	return option.OptCollation(opt)
 }
 
-// OptWriteConcern specifies a write concern.
-type OptWriteConcern option.OptWriteConcern
+// DeleteSessionOpt is an delete session option.
+type DeleteSessionOpt struct{}
 
-func (OptWriteConcern) delete() {}
+func (DeleteSessionOpt) delete() {}
 
-// ConvertDeleteOption implements the Delete interface.
-func (opt OptWriteConcern) ConvertDeleteOption() option.DeleteOptioner {
-	return option.OptWriteConcern(opt)
+// ConvertDeleteSession implements the DeleteSession interface.
+func (DeleteSessionOpt) ConvertDeleteSession() *session.Client {
+	return nil
 }

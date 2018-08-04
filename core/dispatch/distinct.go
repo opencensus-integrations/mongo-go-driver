@@ -11,9 +11,10 @@ import (
 
 	"github.com/mongodb/mongo-go-driver/core/command"
 	"github.com/mongodb/mongo-go-driver/core/description"
-	"github.com/mongodb/mongo-go-driver/core/readconcern"
 	"github.com/mongodb/mongo-go-driver/core/result"
+	"github.com/mongodb/mongo-go-driver/core/session"
 	"github.com/mongodb/mongo-go-driver/core/topology"
+	"github.com/mongodb/mongo-go-driver/core/uuid"
 
 	"go.opencensus.io/trace"
 )
@@ -25,7 +26,8 @@ func Distinct(
 	cmd command.Distinct,
 	topo *topology.Topology,
 	selector description.ServerSelector,
-	rc *readconcern.ReadConcern,
+	clientID uuid.UUID,
+	pool *session.Pool,
 ) (result.Distinct, error) {
 
 	ctx, span := trace.StartSpan(ctx, "mongo-go/core/dispatch.Distinct")
@@ -39,17 +41,6 @@ func Distinct(
 		return result.Distinct{}, err
 	}
 
-	if rc != nil {
-		span.Annotatef(nil, "Creating readConcernOption")
-		opt, err := readConcernOption(rc)
-		span.Annotatef(nil, "Finished creating readConcernOption")
-		if err != nil {
-			span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
-			return result.Distinct{}, err
-		}
-		cmd.Opts = append(cmd.Opts, opt)
-	}
-
 	desc := ss.Description()
 	span.Annotatef(nil, "Invoking ss.Connection")
 	conn, err := ss.Connection(ctx)
@@ -60,6 +51,15 @@ func Distinct(
 	}
 	defer conn.Close()
 
+	// If no explicit session and deployment supports sessions, start implicit session.
+	if cmd.Session == nil && topo.SupportsSessions() {
+		cmd.Session, err = session.NewClientSession(pool, clientID, session.Implicit)
+		if err != nil {
+			return result.Distinct{}, err
+		}
+		defer cmd.Session.EndSession()
+	}
+
 	span.Annotatef(nil, "Invoking cmd.RoundTrip")
 	di, err := cmd.RoundTrip(ctx, desc, conn)
 	span.Annotatef(nil, "Finished invoking cmd.RoundTrip")
@@ -67,4 +67,5 @@ func Distinct(
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 	}
 	return di, err
+
 }

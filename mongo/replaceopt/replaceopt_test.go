@@ -12,7 +12,6 @@ import (
 	"reflect"
 
 	"github.com/mongodb/mongo-go-driver/core/option"
-	"github.com/mongodb/mongo-go-driver/core/writeconcern"
 	"github.com/mongodb/mongo-go-driver/internal/testutil/helpers"
 	"github.com/mongodb/mongo-go-driver/mongo/mongoopt"
 )
@@ -148,17 +147,19 @@ func TestReplaceOpt(t *testing.T) {
 		c := &mongoopt.Collation{
 			Locale: "string locale",
 		}
-		wc := writeconcern.New(writeconcern.W(1))
 
-		opts := []Replace{
+		opts := []ReplaceOption{
 			BypassDocumentValidation(true),
 			Collation(c),
 			Upsert(false),
-			WriteConcern(wc),
 		}
-		bundle := BundleReplace(opts...)
+		params := make([]Replace, len(opts))
+		for i := range opts {
+			params[i] = opts[i]
+		}
+		bundle := BundleReplace(params...)
 
-		deleteOpts, err := bundle.Unbundle(true)
+		deleteOpts, _, err := bundle.Unbundle(true)
 		testhelpers.RequireNil(t, err, "got non-nill error from unbundle: %s", err)
 
 		if len(deleteOpts) != len(opts) {
@@ -169,6 +170,23 @@ func TestReplaceOpt(t *testing.T) {
 			if !reflect.DeepEqual(opt.ConvertReplaceOption(), deleteOpts[i]) {
 				t.Errorf("opt mismatch. expected %#v, got %#v", opt, deleteOpts[i])
 			}
+		}
+	})
+
+	t.Run("Nil Option Bundle", func(t *testing.T) {
+		sess := ReplaceSessionOpt{}
+		opts, _, err := BundleReplace(Upsert(true), BundleReplace(nil), sess, nil).unbundle()
+		testhelpers.RequireNil(t, err, "got non-nil error from unbundle: %s", err)
+
+		if len(opts) != 1 {
+			t.Errorf("expected bundle length 1. got: %d", len(opts))
+		}
+
+		opts, _, err = BundleReplace(nil, sess, BundleReplace(nil), Upsert(true)).unbundle()
+		testhelpers.RequireNil(t, err, "got non-nil error from unbundle: %s", err)
+
+		if len(opts) != 1 {
+			t.Errorf("expected bundle length 1. got: %d", len(opts))
 		}
 	})
 
@@ -210,7 +228,7 @@ func TestReplaceOpt(t *testing.T) {
 
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
-				options, err := tc.bundle.Unbundle(tc.dedup)
+				options, _, err := tc.bundle.Unbundle(tc.dedup)
 				testhelpers.RequireNil(t, err, "got non-nill error from unbundle: %s", err)
 
 				if len(options) != len(tc.expectedOpts) {

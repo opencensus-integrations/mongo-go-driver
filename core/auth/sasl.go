@@ -63,7 +63,7 @@ func ConductSaslConversation(ctx context.Context, desc description.Server, rw wi
 		return newError(err, mech)
 	}
 
-	saslStartCmd := command.Command{
+	saslStartCmd := command.Read{
 		DB: db,
 		Command: bson.NewDocument(
 			bson.EC.Int32("saslStart", 1),
@@ -126,7 +126,7 @@ func ConductSaslConversation(ctx context.Context, desc description.Server, rw wi
 			return nil
 		}
 
-		saslContinueCmd := command.Command{
+		saslContinueCmd := command.Read{
 			DB: db,
 			Command: bson.NewDocument(
 				bson.EC.Int32("saslContinue", 1),

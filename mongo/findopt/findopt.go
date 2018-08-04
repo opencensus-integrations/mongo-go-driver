@@ -10,8 +10,7 @@ import (
 	"time"
 
 	"github.com/mongodb/mongo-go-driver/core/option"
-	"github.com/mongodb/mongo-go-driver/core/readconcern"
-	"github.com/mongodb/mongo-go-driver/core/writeconcern"
+	"github.com/mongodb/mongo-go-driver/core/session"
 	"github.com/mongodb/mongo-go-driver/mongo/mongoopt"
 )
 
@@ -22,7 +21,6 @@ var (
 	_ DeleteOne  = (*OptMaxTime)(nil)
 	_ DeleteOne  = (*OptProjection)(nil)
 	_ DeleteOne  = (*OptSort)(nil)
-	_ DeleteOne  = (*OptWriteConcern)(nil)
 	_ Find       = (*FindBundle)(nil)
 	_ Find       = (*OptAllowPartialResults)(nil)
 	_ Find       = (*OptBatchSize)(nil)
@@ -39,7 +37,6 @@ var (
 	_ Find       = (*OptNoCursorTimeout)(nil)
 	_ Find       = (*OptOplogReplay)(nil)
 	_ Find       = (*OptProjection)(nil)
-	_ Find       = (*OptReadConcern)(nil)
 	_ Find       = (*OptReturnKey)(nil)
 	_ Find       = (*OptShowRecordID)(nil)
 	_ Find       = (*OptSkip)(nil)
@@ -60,7 +57,6 @@ var (
 	_ One        = (*OptNoCursorTimeout)(nil)
 	_ One        = (*OptOplogReplay)(nil)
 	_ One        = (*OptProjection)(nil)
-	_ One        = (*OptReadConcern)(nil)
 	_ One        = (*OptReturnKey)(nil)
 	_ One        = (*OptShowRecordID)(nil)
 	_ One        = (*OptSkip)(nil)
@@ -75,7 +71,6 @@ var (
 	_ ReplaceOne = (*OptReturnDocument)(nil)
 	_ ReplaceOne = (*OptSort)(nil)
 	_ ReplaceOne = (*OptUpsert)(nil)
-	_ ReplaceOne = (*OptWriteConcern)(nil)
 	_ UpdateOne  = (*UpdateOneBundle)(nil)
 	_ UpdateOne  = (*OptArrayFilters)(nil)
 	_ UpdateOne  = (*OptBypassDocumentValidation)(nil)
@@ -86,7 +81,6 @@ var (
 	_ UpdateOne  = (*OptReturnDocument)(nil)
 	_ UpdateOne  = (*OptSort)(nil)
 	_ UpdateOne  = (*OptUpsert)(nil)
-	_ UpdateOne  = (*OptWriteConcern)(nil)
 )
 
 // AllowPartialResults gets partial results if some shards are down.
@@ -195,14 +189,6 @@ func Projection(projection interface{}) OptProjection {
 	}
 }
 
-// ReadConcern specifies the read concern.
-// Find, One
-func ReadConcern(rc *readconcern.ReadConcern) OptReadConcern {
-	return OptReadConcern{
-		ReadConcern: rc,
-	}
-}
-
 // ReturnDocument specifies whether to return the updated or original document.
 // ReplaceOne, UpdateOne
 func ReturnDocument(rd mongoopt.ReturnDocument) OptReturnDocument {
@@ -244,14 +230,6 @@ func Sort(sort interface{}) OptSort {
 // ReplaceOne, UpdateOne
 func Upsert(b bool) OptUpsert {
 	return OptUpsert(b)
-}
-
-// WriteConcern specifies a write concern.
-// DeleteOne, ReplaceOne, UpdateOne
-func WriteConcern(wc *writeconcern.WriteConcern) OptWriteConcern {
-	return OptWriteConcern{
-		WriteConcern: wc,
-	}
 }
 
 // OptAllowPartialResults gets partial results if some shards are down.
@@ -596,22 +574,6 @@ func (opt OptProjection) ConvertUpdateOneOption() option.FindOneAndUpdateOptione
 	}
 }
 
-// OptReadConcern specifies the read concern.
-type OptReadConcern option.OptReadConcern
-
-func (OptReadConcern) find() {}
-func (OptReadConcern) one()  {}
-
-// ConvertFindOption implements the Find interface.
-func (opt OptReadConcern) ConvertFindOption() option.FindOptioner {
-	return option.OptReadConcern(opt)
-}
-
-// ConvertFindOneOption implements the One interface.
-func (opt OptReadConcern) ConvertFindOneOption() option.FindOptioner {
-	return option.OptReadConcern(opt)
-}
-
 // OptReturnDocument specifies whether to return the updated or original document.
 type OptReturnDocument option.OptReturnDocument
 
@@ -743,24 +705,36 @@ func (opt OptUpsert) ConvertUpdateOneOption() option.FindOneAndUpdateOptioner {
 	return option.OptUpsert(opt)
 }
 
-// OptWriteConcern specifies a write concern.
-type OptWriteConcern option.OptWriteConcern
+// FindSessionOpt is an find session option.
+type FindSessionOpt struct{}
 
-func (OptWriteConcern) deleteOne()  {}
-func (OptWriteConcern) replaceOne() {}
-func (OptWriteConcern) updateOne()  {}
+func (FindSessionOpt) find()       {}
+func (FindSessionOpt) one()        {}
+func (FindSessionOpt) deleteOne()  {}
+func (FindSessionOpt) replaceOne() {}
+func (FindSessionOpt) updateOne()  {}
 
-// ConvertDeleteOneOption implements the DeleteOne interface.
-func (opt OptWriteConcern) ConvertDeleteOneOption() option.FindOneAndDeleteOptioner {
-	return option.OptWriteConcern(opt)
+// ConvertFindSession implements FindSession interface.
+func (FindSessionOpt) ConvertFindSession() *session.Client {
+	return nil
 }
 
-// ConvertReplaceOneOption implements the ReplaceOne interface.
-func (opt OptWriteConcern) ConvertReplaceOneOption() option.FindOneAndReplaceOptioner {
-	return option.OptWriteConcern(opt)
+// ConvertFindOneSession implements FindOneSession interface.
+func (FindSessionOpt) ConvertFindOneSession() *session.Client {
+	return nil
 }
 
-// ConvertUpdateOneOption implements the UpdateOne interface.
-func (opt OptWriteConcern) ConvertUpdateOneOption() option.FindOneAndUpdateOptioner {
-	return option.OptWriteConcern(opt)
+// ConvertDeleteOneSession implements DeleteOneSession interface.
+func (FindSessionOpt) ConvertDeleteOneSession() *session.Client {
+	return nil
+}
+
+// ConvertReplaceOneSession implements ReplaceOneSession interface.
+func (FindSessionOpt) ConvertReplaceOneSession() *session.Client {
+	return nil
+}
+
+// ConvertUpdateOneSession implements UpdateOneSession interface.
+func (FindSessionOpt) ConvertUpdateOneSession() *session.Client {
+	return nil
 }

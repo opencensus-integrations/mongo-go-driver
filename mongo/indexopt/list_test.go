@@ -108,13 +108,17 @@ func TestListOpt(t *testing.T) {
 	}
 
 	t.Run("TestAll", func(t *testing.T) {
-		opts := []List{
+		opts := []ListOption{
 			BatchSize(5),
 			MaxTime(5000),
 		}
-		bundle := BundleList(opts...)
+		params := make([]List, len(opts))
+		for i := range opts {
+			params[i] = opts[i]
+		}
+		bundle := BundleList(params...)
 
-		deleteOpts, err := bundle.Unbundle(true)
+		deleteOpts, _, err := bundle.Unbundle(true)
 		testhelpers.RequireNil(t, err, "got non-nill error from unbundle: %s", err)
 
 		if len(deleteOpts) != len(opts) {
@@ -125,6 +129,23 @@ func TestListOpt(t *testing.T) {
 			if !reflect.DeepEqual(opt.ConvertListOption(), deleteOpts[i]) {
 				t.Errorf("opt mismatch. expected %#v, got %#v", opt, deleteOpts[i])
 			}
+		}
+	})
+
+	t.Run("Nil Option Bundle", func(t *testing.T) {
+		sess := IndexSessionOpt{}
+		opts, _, err := BundleList(MaxTime(1), BundleList(nil), sess, nil).unbundle()
+		testhelpers.RequireNil(t, err, "got non-nil error from unbundle: %s", err)
+
+		if len(opts) != 1 {
+			t.Errorf("expected bundle length 1. got: %d", len(opts))
+		}
+
+		opts, _, err = BundleList(nil, sess, BundleList(nil), MaxTime(1)).unbundle()
+		testhelpers.RequireNil(t, err, "got non-nil error from unbundle: %s", err)
+
+		if len(opts) != 1 {
+			t.Errorf("expected bundle length 1. got: %d", len(opts))
 		}
 	})
 
@@ -150,7 +171,7 @@ func TestListOpt(t *testing.T) {
 
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
-				opts, err := tc.bundle.Unbundle(tc.dedup)
+				opts, _, err := tc.bundle.Unbundle(tc.dedup)
 				testhelpers.RequireNil(t, err, "err unbundling db: %s", err)
 
 				if len(opts) != len(tc.expectedOpts) {

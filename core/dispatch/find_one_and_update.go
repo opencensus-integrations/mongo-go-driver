@@ -12,7 +12,9 @@ import (
 	"github.com/mongodb/mongo-go-driver/core/command"
 	"github.com/mongodb/mongo-go-driver/core/description"
 	"github.com/mongodb/mongo-go-driver/core/result"
+	"github.com/mongodb/mongo-go-driver/core/session"
 	"github.com/mongodb/mongo-go-driver/core/topology"
+	"github.com/mongodb/mongo-go-driver/core/uuid"
 	"github.com/mongodb/mongo-go-driver/core/writeconcern"
 
 	"go.opencensus.io/trace"
@@ -25,7 +27,8 @@ func FindOneAndUpdate(
 	cmd command.FindOneAndUpdate,
 	topo *topology.Topology,
 	selector description.ServerSelector,
-	wc *writeconcern.WriteConcern,
+	clientID uuid.UUID,
+	pool *session.Pool,
 ) (result.FindAndModify, error) {
 
 	ctx, span := trace.StartSpan(ctx, "mongo-go/core/dispatch.FindOneAndUpdate")
@@ -39,19 +42,6 @@ func FindOneAndUpdate(
 		return result.FindAndModify{}, err
 	}
 
-	acknowledged := true
-	if wc != nil {
-		span.Annotatef(nil, "Creating writeConcernOption")
-		opt, err := writeConcernOption(wc)
-		span.Annotatef(nil, "Finished creating writeConcernOption")
-		if err != nil {
-			span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
-			return result.FindAndModify{}, err
-		}
-		cmd.Opts = append(cmd.Opts, opt)
-		acknowledged = wc.Acknowledged()
-	}
-
 	desc := ss.Description()
 	span.Annotatef(nil, "Invoking ss.Connection")
 	conn, err := ss.Connection(ctx)
@@ -61,18 +51,26 @@ func FindOneAndUpdate(
 		return result.FindAndModify{}, err
 	}
 
-	if !acknowledged {
+	if !writeconcern.AckWrite(cmd.WriteConcern) {
 		go func() {
-			defer func() {
-				_ = recover()
-			}()
+			defer func() { _ = recover() }()
 			defer conn.Close()
+
 			_, _ = cmd.RoundTrip(ctx, desc, conn)
 		}()
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: "Unackwnowledge write"})
-		return result.FindAndModify{}, ErrUnacknowledgedWrite
+		return result.FindAndModify{}, command.ErrUnacknowledgedWrite
 	}
 	defer conn.Close()
+
+	// If no explicit session and deployment supports sessions, start implicit session.
+	if cmd.Session == nil && topo.SupportsSessions() {
+		cmd.Session, err = session.NewClientSession(pool, clientID, session.Implicit)
+		if err != nil {
+			return result.FindAndModify{}, err
+		}
+		defer cmd.Session.EndSession()
+	}
 
 	span.Annotatef(nil, "Invoking cmd.RoundTrip")
 	fim, err := cmd.RoundTrip(ctx, desc, conn)
@@ -81,4 +79,5 @@ func FindOneAndUpdate(
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 	}
 	return fim, err
+
 }

@@ -12,7 +12,9 @@ import (
 	"github.com/mongodb/mongo-go-driver/core/command"
 	"github.com/mongodb/mongo-go-driver/core/description"
 	"github.com/mongodb/mongo-go-driver/core/result"
+	"github.com/mongodb/mongo-go-driver/core/session"
 	"github.com/mongodb/mongo-go-driver/core/topology"
+	"github.com/mongodb/mongo-go-driver/core/uuid"
 
 	"go.opencensus.io/trace"
 )
@@ -24,6 +26,8 @@ func CreateIndexes(
 	cmd command.CreateIndexes,
 	topo *topology.Topology,
 	selector description.ServerSelector,
+	clientID uuid.UUID,
+	pool *session.Pool,
 ) (result.CreateIndexes, error) {
 
 	ctx, span := trace.StartSpan(ctx, "mongo-go/core/dispatch.CreateIndexes")
@@ -45,6 +49,15 @@ func CreateIndexes(
 		return result.CreateIndexes{}, err
 	}
 	defer conn.Close()
+
+	// If no explicit session and deployment supports sessions, start implicit session.
+	if cmd.Session == nil && topo.SupportsSessions() {
+		cmd.Session, err = session.NewClientSession(pool, clientID, session.Implicit)
+		if err != nil {
+			return result.CreateIndexes{}, err
+		}
+		defer cmd.Session.EndSession()
+	}
 
 	span.Annotatef(nil, "Invoking cmd.RoundTrip")
 	ci, err := cmd.RoundTrip(ctx, ss.Description(), conn)

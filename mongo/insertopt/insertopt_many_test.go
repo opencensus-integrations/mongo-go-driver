@@ -6,7 +6,6 @@ import (
 	"reflect"
 
 	"github.com/mongodb/mongo-go-driver/core/option"
-	"github.com/mongodb/mongo-go-driver/core/writeconcern"
 	"github.com/mongodb/mongo-go-driver/internal/testutil/helpers"
 )
 
@@ -14,7 +13,7 @@ func createNestedInsertManyBundle1(t *testing.T) *ManyBundle {
 	nestedBundle := BundleMany(BypassDocumentValidation(false))
 	testhelpers.RequireNotNil(t, nestedBundle, "nested bundle was nil")
 
-	outerBundle := BundleMany(BypassDocumentValidation(true), WriteConcern(wc1), nestedBundle)
+	outerBundle := BundleMany(BypassDocumentValidation(true), Ordered(true), nestedBundle)
 	testhelpers.RequireNotNil(t, outerBundle, "outer bundle was nil")
 
 	return outerBundle
@@ -25,10 +24,10 @@ func createNestedInsertManyBundle2(t *testing.T) *ManyBundle {
 	b1 := BundleMany(BypassDocumentValidation(false))
 	testhelpers.RequireNotNil(t, b1, "nested bundle was nil")
 
-	b2 := BundleMany(WriteConcern(wc2), b1)
+	b2 := BundleMany(Ordered(false), b1)
 	testhelpers.RequireNotNil(t, b2, "nested bundle was nil")
 
-	outerBundle := BundleMany(BypassDocumentValidation(true), WriteConcern(wc1), b2)
+	outerBundle := BundleMany(BypassDocumentValidation(true), Ordered(true), b2)
 	testhelpers.RequireNotNil(t, outerBundle, "outer bundle was nil")
 
 	return outerBundle
@@ -39,16 +38,16 @@ func createNestedInsertManyBundle3(t *testing.T) *ManyBundle {
 	b1 := BundleMany(BypassDocumentValidation(false))
 	testhelpers.RequireNotNil(t, b1, "nested bundle was nil")
 
-	b2 := BundleMany(WriteConcern(wc2), b1)
+	b2 := BundleMany(Ordered(false), b1)
 	testhelpers.RequireNotNil(t, b2, "nested bundle was nil")
 
 	b3 := BundleMany(BypassDocumentValidation(true))
 	testhelpers.RequireNotNil(t, b3, "nested bundle was nil")
 
-	b4 := BundleMany(WriteConcern(wc2), b3)
+	b4 := BundleMany(Ordered(false), b3)
 	testhelpers.RequireNotNil(t, b4, "nested bundle was nil")
 
-	outerBundle := BundleMany(b4, WriteConcern(wc1), b2)
+	outerBundle := BundleMany(b4, Ordered(true), b2)
 	testhelpers.RequireNotNil(t, outerBundle, "outer bundle was nil")
 
 	return outerBundle
@@ -90,36 +89,36 @@ func TestInsertManyOpt(t *testing.T) {
 	nestedBundle1 := createNestedInsertManyBundle1(t)
 	nestedBundleOpts1 := []option.Optioner{
 		OptBypassDocumentValidation(true).ConvertInsertOption(),
-		OptWriteConcern{wc1}.ConvertInsertOption(),
+		OptOrdered(true).ConvertInsertOption(),
 		OptBypassDocumentValidation(false).ConvertInsertOption(),
 	}
 	nestedBundleDedupOpts1 := []option.Optioner{
-		OptWriteConcern{wc1}.ConvertInsertOption(),
+		OptOrdered(true).ConvertInsertOption(),
 		OptBypassDocumentValidation(false).ConvertInsertOption(),
 	}
 
 	nestedBundle2 := createNestedInsertManyBundle2(t)
 	nestedBundleOpts2 := []option.Optioner{
 		OptBypassDocumentValidation(true).ConvertInsertOption(),
-		OptWriteConcern{wc1}.ConvertInsertOption(),
-		OptWriteConcern{wc2}.ConvertInsertOption(),
+		OptOrdered(true).ConvertInsertOption(),
+		OptOrdered(false).ConvertInsertOption(),
 		OptBypassDocumentValidation(false).ConvertInsertOption(),
 	}
 	nestedBundleDedupOpts2 := []option.Optioner{
-		OptWriteConcern{wc2}.ConvertInsertOption(),
+		OptOrdered(false).ConvertInsertOption(),
 		OptBypassDocumentValidation(false).ConvertInsertOption(),
 	}
 
 	nestedBundle3 := createNestedInsertManyBundle3(t)
 	nestedBundleOpts3 := []option.Optioner{
-		OptWriteConcern{wc2}.ConvertInsertOption(),
+		OptOrdered(false).ConvertInsertOption(),
 		OptBypassDocumentValidation(true).ConvertInsertOption(),
-		OptWriteConcern{wc1}.ConvertInsertOption(),
-		OptWriteConcern{wc2}.ConvertInsertOption(),
+		OptOrdered(true).ConvertInsertOption(),
+		OptOrdered(false).ConvertInsertOption(),
 		OptBypassDocumentValidation(false).ConvertInsertOption(),
 	}
 	nestedBundleDedupOpts3 := []option.Optioner{
-		OptWriteConcern{wc2}.ConvertInsertOption(),
+		OptOrdered(false).ConvertInsertOption(),
 		OptBypassDocumentValidation(false).ConvertInsertOption(),
 	}
 
@@ -138,16 +137,17 @@ func TestInsertManyOpt(t *testing.T) {
 	})
 
 	t.Run("TestAll", func(t *testing.T) {
-		wc := writeconcern.New(writeconcern.W(1))
-
-		opts := []Many{
+		opts := []ManyOption{
 			BypassDocumentValidation(true),
 			Ordered(false),
-			WriteConcern(wc),
 		}
-		bundle := BundleMany(opts...)
+		params := make([]Many, len(opts))
+		for i := range opts {
+			params[i] = opts[i]
+		}
+		bundle := BundleMany(params...)
 
-		deleteOpts, err := bundle.Unbundle(true)
+		deleteOpts, _, err := bundle.Unbundle(true)
 		testhelpers.RequireNil(t, err, "got non-nill error from unbundle: %s", err)
 
 		if len(deleteOpts) != len(opts) {
@@ -158,6 +158,23 @@ func TestInsertManyOpt(t *testing.T) {
 			if !reflect.DeepEqual(opt.ConvertInsertOption(), deleteOpts[i]) {
 				t.Errorf("opt mismatch. expected %#v, got %#v", opt, deleteOpts[i])
 			}
+		}
+	})
+
+	t.Run("Nil Option Bundle", func(t *testing.T) {
+		sess := InsertSessionOpt{}
+		opts, _, err := BundleMany(BypassDocumentValidation(true), BundleMany(nil), sess, nil).unbundle()
+		testhelpers.RequireNil(t, err, "got non-nil error from unbundle: %s", err)
+
+		if len(opts) != 1 {
+			t.Errorf("expected bundle length 1. got: %d", len(opts))
+		}
+
+		opts, _, err = BundleMany(nil, sess, BundleMany(nil), BypassDocumentValidation(true)).unbundle()
+		testhelpers.RequireNil(t, err, "got non-nil error from unbundle: %s", err)
+
+		if len(opts) != 1 {
+			t.Errorf("expected bundle length 1. got: %d", len(opts))
 		}
 	})
 
@@ -185,7 +202,7 @@ func TestInsertManyOpt(t *testing.T) {
 
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
-				options, err := tc.bundle.Unbundle(tc.dedup)
+				options, _, err := tc.bundle.Unbundle(tc.dedup)
 				testhelpers.RequireNil(t, err, "got non-nill error from unbundle: %s", err)
 
 				if len(options) != len(tc.expectedOpts) {

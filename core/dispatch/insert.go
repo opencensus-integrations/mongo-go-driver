@@ -12,7 +12,9 @@ import (
 	"github.com/mongodb/mongo-go-driver/core/command"
 	"github.com/mongodb/mongo-go-driver/core/description"
 	"github.com/mongodb/mongo-go-driver/core/result"
+	"github.com/mongodb/mongo-go-driver/core/session"
 	"github.com/mongodb/mongo-go-driver/core/topology"
+	"github.com/mongodb/mongo-go-driver/core/uuid"
 	"github.com/mongodb/mongo-go-driver/core/writeconcern"
 
 	"go.opencensus.io/trace"
@@ -25,7 +27,8 @@ func Insert(
 	cmd command.Insert,
 	topo *topology.Topology,
 	selector description.ServerSelector,
-	wc *writeconcern.WriteConcern,
+	clientID uuid.UUID,
+	pool *session.Pool,
 ) (result.Insert, error) {
 
 	ctx, span := trace.StartSpan(ctx, "mongo-go/core/dispatch.Insert")
@@ -39,32 +42,33 @@ func Insert(
 		return result.Insert{}, err
 	}
 
-	acknowledged := true
-	if wc != nil {
-		opt, err := writeConcernOption(wc)
-		if err != nil {
-			return result.Insert{}, err
-		}
-		cmd.Opts = append(cmd.Opts, opt)
-		acknowledged = wc.Acknowledged()
-	}
-
 	desc := ss.Description()
 	conn, err := ss.Connection(ctx)
 	if err != nil {
 		return result.Insert{}, err
 	}
 
-	if !acknowledged {
+	if !writeconcern.AckWrite(cmd.WriteConcern) {
 		go func() {
 			defer func() { _ = recover() }()
 			defer conn.Close()
+
 			_, _ = cmd.RoundTrip(ctx, desc, conn)
 		}()
+
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: "Unacknowledged write"})
-		return result.Insert{}, ErrUnacknowledgedWrite
+		return result.Insert{}, command.ErrUnacknowledgedWrite
 	}
 	defer conn.Close()
+
+	// If no explicit session and deployment supports sessions, start implicit session.
+	if cmd.Session == nil && topo.SupportsSessions() {
+		cmd.Session, err = session.NewClientSession(pool, clientID, session.Implicit)
+		if err != nil {
+			return result.Insert{}, err
+		}
+		defer cmd.Session.EndSession()
+	}
 
 	span.Annotatef(nil, "Invoking command.RoundTrip")
 	ri, err := cmd.RoundTrip(ctx, desc, conn)
@@ -73,4 +77,5 @@ func Insert(
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 	}
 	return ri, err
+
 }

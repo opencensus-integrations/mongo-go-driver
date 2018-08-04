@@ -11,7 +11,9 @@ import (
 
 	"github.com/mongodb/mongo-go-driver/core/command"
 	"github.com/mongodb/mongo-go-driver/core/description"
+	"github.com/mongodb/mongo-go-driver/core/session"
 	"github.com/mongodb/mongo-go-driver/core/topology"
+	"github.com/mongodb/mongo-go-driver/core/uuid"
 
 	"go.opencensus.io/trace"
 )
@@ -23,6 +25,8 @@ func ListIndexes(
 	cmd command.ListIndexes,
 	topo *topology.Topology,
 	selector description.ServerSelector,
+	clientID uuid.UUID,
+	pool *session.Pool,
 ) (command.Cursor, error) {
 	ctx, span := trace.StartSpan(ctx, "mongo-go/core/dispatch.ListeIndexes")
 	defer span.End()
@@ -41,6 +45,14 @@ func ListIndexes(
 		return nil, err
 	}
 	defer conn.Close()
+
+	// If no explicit session and deployment supports sessions, start implicit session.
+	if cmd.Session == nil && topo.SupportsSessions() {
+		cmd.Session, err = session.NewClientSession(pool, clientID, session.Implicit)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	span.Annotatef(nil, "Invoking cmd.RoundTrip")
 	cur, err := cmd.RoundTrip(ctx, ss.Description(), ss, conn)

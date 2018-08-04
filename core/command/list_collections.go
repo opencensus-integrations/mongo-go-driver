@@ -13,6 +13,7 @@ import (
 	"github.com/mongodb/mongo-go-driver/core/description"
 	"github.com/mongodb/mongo-go-driver/core/option"
 	"github.com/mongodb/mongo-go-driver/core/readpref"
+	"github.com/mongodb/mongo-go-driver/core/session"
 	"github.com/mongodb/mongo-go-driver/core/wiremessage"
 )
 
@@ -20,17 +21,27 @@ import (
 //
 // The listCollections command lists the collections in a database.
 type ListCollections struct {
-	DB     string
-	Filter *bson.Document
-	Opts   []option.ListCollectionsOptioner
-
-	result   Cursor
+	Clock    *session.ClusterClock
+	DB       string
+	Filter   *bson.Document
+	Opts     []option.ListCollectionsOptioner
 	ReadPref *readpref.ReadPref
-	err      error
+	Session  *session.Client
+
+	result Cursor
+	err    error
 }
 
 // Encode will encode this command into a wire message for the given server description.
 func (lc *ListCollections) Encode(desc description.SelectedServer) (wiremessage.WireMessage, error) {
+	encoded, err := lc.encode(desc)
+	if err != nil {
+		return nil, err
+	}
+	return encoded.Encode(desc)
+}
+
+func (lc *ListCollections) encode(desc description.SelectedServer) (*Read, error) {
 	cmd := bson.NewDocument(bson.EC.Int32("listCollections", 1))
 
 	if lc.Filter != nil {
@@ -47,17 +58,27 @@ func (lc *ListCollections) Encode(desc description.SelectedServer) (wiremessage.
 		}
 	}
 
-	return (&Command{DB: lc.DB, Command: cmd, isWrite: true, ReadPref: lc.ReadPref}).Encode(desc)
+	return &Read{
+		Clock:    lc.Clock,
+		DB:       lc.DB,
+		Command:  cmd,
+		ReadPref: lc.ReadPref,
+		Session:  lc.Session,
+	}, nil
 }
 
-// Decode will decode the wire message using the provided server description. Errors during decoding
+// Decode will decode the wire message using the provided server description. Errors during decolcng
 // are deferred until either the Result or Err methods are called.
 func (lc *ListCollections) Decode(desc description.SelectedServer, cb CursorBuilder, wm wiremessage.WireMessage) *ListCollections {
-	rdr, err := (&Command{}).Decode(desc, wm).Result()
+	rdr, err := (&Read{}).Decode(desc, wm).Result()
 	if err != nil {
 		lc.err = err
 		return lc
 	}
+	return lc.decode(desc, cb, rdr)
+}
+
+func (lc *ListCollections) decode(desc description.SelectedServer, cb CursorBuilder, rdr bson.Reader) *ListCollections {
 
 	opts := make([]option.CursorOptioner, 0)
 	for _, opt := range lc.Opts {
@@ -68,7 +89,7 @@ func (lc *ListCollections) Decode(desc description.SelectedServer, cb CursorBuil
 		opts = append(opts, curOpt)
 	}
 
-	lc.result, lc.err = cb.BuildCursor(rdr, opts...)
+	lc.result, lc.err = cb.BuildCursor(rdr, lc.Session, lc.Clock, opts...)
 
 	return lc
 }
@@ -86,18 +107,15 @@ func (lc *ListCollections) Err() error { return lc.err }
 
 // RoundTrip handles the execution of this command using the provided wiremessage.ReadWriter.
 func (lc *ListCollections) RoundTrip(ctx context.Context, desc description.SelectedServer, cb CursorBuilder, rw wiremessage.ReadWriter) (Cursor, error) {
-	wm, err := lc.Encode(desc)
+	cmd, err := lc.encode(desc)
 	if err != nil {
 		return nil, err
 	}
 
-	err = rw.WriteWireMessage(ctx, wm)
+	rdr, err := cmd.RoundTrip(ctx, desc, rw)
 	if err != nil {
 		return nil, err
 	}
-	wm, err = rw.ReadWireMessage(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return lc.Decode(desc, cb, wm).Result()
+
+	return lc.decode(desc, cb, rdr).Result()
 }

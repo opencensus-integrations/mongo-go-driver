@@ -4,7 +4,7 @@ import (
 	"time"
 
 	"github.com/mongodb/mongo-go-driver/core/option"
-	"github.com/mongodb/mongo-go-driver/core/writeconcern"
+	"github.com/mongodb/mongo-go-driver/core/session"
 )
 
 // BatchSize specifes the number of documents to return in each batch.
@@ -17,34 +17,6 @@ func BatchSize(i int32) OptBatchSize {
 // Create, Drop, List
 func MaxTime(d time.Duration) OptMaxTime {
 	return OptMaxTime(d)
-}
-
-// WriteConcern specifies a write concern.
-// Create, Drop
-func WriteConcern(wc *writeconcern.WriteConcern) OptWriteConcern {
-	return OptWriteConcern{
-		WriteConcern: wc,
-	}
-}
-
-// OptWriteConcern specifies a write concern.
-type OptWriteConcern option.OptWriteConcern
-
-func (OptWriteConcern) create() {}
-func (OptWriteConcern) drop()   {}
-
-// ConvertCreateOption implements the Create interface.
-func (opt OptWriteConcern) ConvertCreateOption() option.CreateIndexesOptioner {
-	return option.OptWriteConcern{
-		WriteConcern: opt.WriteConcern,
-	}
-}
-
-// ConvertDropOption implements the Drop interface.
-func (opt OptWriteConcern) ConvertDropOption() option.DropIndexesOptioner {
-	return option.OptWriteConcern{
-		WriteConcern: opt.WriteConcern,
-	}
 }
 
 // OptMaxTime specifies the maximum amount of time to allow the query to run.
@@ -77,4 +49,16 @@ func (OptBatchSize) list() {}
 // ConvertListOption implements the List interface.
 func (opt OptBatchSize) ConvertListOption() option.ListIndexesOptioner {
 	return option.OptBatchSize(opt)
+}
+
+// IndexSessionOpt is an indexSession option.
+type IndexSessionOpt struct{}
+
+func (IndexSessionOpt) create() {}
+func (IndexSessionOpt) drop()   {}
+func (IndexSessionOpt) list()   {}
+
+// ConvertIndexSession implements the DropIndexSession interface.
+func (IndexSessionOpt) ConvertIndexSession() *session.Client {
+	return nil
 }

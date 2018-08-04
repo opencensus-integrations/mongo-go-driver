@@ -6,7 +6,6 @@ import (
 	"reflect"
 
 	"github.com/mongodb/mongo-go-driver/core/option"
-	"github.com/mongodb/mongo-go-driver/core/writeconcern"
 	"github.com/mongodb/mongo-go-driver/internal/testutil/helpers"
 	"github.com/mongodb/mongo-go-driver/mongo/mongoopt"
 )
@@ -139,20 +138,22 @@ func TestFindAndReplaceOneOpt(t *testing.T) {
 		}
 		proj := Projection(true)
 		sort := Sort(true)
-		wc := writeconcern.New(writeconcern.W(10))
 
-		opts := []ReplaceOne{
+		opts := []ReplaceOneOption{
 			Collation(c),
 			MaxTime(5),
 			Projection(proj),
 			ReturnDocument(mongoopt.After),
 			Sort(sort),
 			Upsert(true),
-			WriteConcern(wc),
 		}
-		bundle := BundleReplaceOne(opts...)
+		params := make([]ReplaceOne, len(opts))
+		for i := range opts {
+			params[i] = opts[i]
+		}
+		bundle := BundleReplaceOne(params...)
 
-		deleteOpts, err := bundle.Unbundle(true)
+		deleteOpts, _, err := bundle.Unbundle(true)
 		testhelpers.RequireNil(t, err, "got non-nill error from unbundle: %s", err)
 
 		if len(deleteOpts) != len(opts) {
@@ -163,6 +164,23 @@ func TestFindAndReplaceOneOpt(t *testing.T) {
 			if !reflect.DeepEqual(opt.ConvertReplaceOneOption(), deleteOpts[i]) {
 				t.Errorf("opt mismatch. expected %#v, got %#v", opt, deleteOpts[i])
 			}
+		}
+	})
+
+	t.Run("Nil Option Bundle", func(t *testing.T) {
+		sess := FindSessionOpt{}
+		opts, _, err := BundleReplaceOne(Upsert(true), BundleReplaceOne(nil), sess, nil).unbundle()
+		testhelpers.RequireNil(t, err, "got non-nil error from unbundle: %s", err)
+
+		if len(opts) != 1 {
+			t.Errorf("expected bundle length 1. got: %d", len(opts))
+		}
+
+		opts, _, err = BundleReplaceOne(nil, sess, BundleReplaceOne(nil), Upsert(true)).unbundle()
+		testhelpers.RequireNil(t, err, "got non-nil error from unbundle: %s", err)
+
+		if len(opts) != 1 {
+			t.Errorf("expected bundle length 1. got: %d", len(opts))
 		}
 	})
 
@@ -204,7 +222,7 @@ func TestFindAndReplaceOneOpt(t *testing.T) {
 
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
-				options, err := tc.bundle.Unbundle(tc.dedup)
+				options, _, err := tc.bundle.Unbundle(tc.dedup)
 				testhelpers.RequireNil(t, err, "got non-nill error from unbundle: %s", err)
 
 				if len(options) != len(tc.expectedOpts) {

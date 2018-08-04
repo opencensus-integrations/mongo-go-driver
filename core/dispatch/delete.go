@@ -12,7 +12,9 @@ import (
 	"github.com/mongodb/mongo-go-driver/core/command"
 	"github.com/mongodb/mongo-go-driver/core/description"
 	"github.com/mongodb/mongo-go-driver/core/result"
+	"github.com/mongodb/mongo-go-driver/core/session"
 	"github.com/mongodb/mongo-go-driver/core/topology"
+	"github.com/mongodb/mongo-go-driver/core/uuid"
 	"github.com/mongodb/mongo-go-driver/core/writeconcern"
 
 	"github.com/mongodb/mongo-go-driver/internal/observability"
@@ -28,7 +30,8 @@ func Delete(
 	cmd command.Delete,
 	topo *topology.Topology,
 	selector description.ServerSelector,
-	wc *writeconcern.WriteConcern,
+	clientID uuid.UUID,
+	pool *session.Pool,
 ) (result.Delete, error) {
 
 	ctx, span := trace.StartSpan(ctx, "mongo-go/core/dispatch.Delete")
@@ -45,21 +48,6 @@ func Delete(
 		return result.Delete{}, err
 	}
 
-	acknowledged := true
-	if wc != nil {
-		span.Annotatef(nil, "Creating writeConcernOption")
-		opt, err := writeConcernOption(wc)
-		span.Annotatef(nil, "Finished creating writeConcernOption")
-		if err != nil {
-			ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "write"))
-			stats.Record(ctx, observability.MErrors.M(1))
-			span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
-			return result.Delete{}, err
-		}
-		cmd.Opts = append(cmd.Opts, opt)
-		acknowledged = wc.Acknowledged()
-	}
-
 	desc := ss.Description()
 	span.Annotatef(nil, "Creating ss.Connection")
 	conn, err := ss.Connection(ctx)
@@ -71,20 +59,30 @@ func Delete(
 		return result.Delete{}, err
 	}
 
-	if !acknowledged {
+	if !writeconcern.AckWrite(cmd.WriteConcern) {
 		go func() {
 			defer func() { _ = recover() }()
 			defer conn.Close()
+
 			_, _ = cmd.RoundTrip(ctx, desc, conn)
 		}()
+
 		ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "write"))
 		stats.Record(ctx, observability.MErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: "Unacknowledged write"})
-		return result.Delete{}, ErrUnacknowledgedWrite
+		return result.Delete{}, command.ErrUnacknowledgedWrite
 	}
 	defer conn.Close()
 
-	span.Annotatef(nil, "Invoking cmd.RoundTrip")
+	// If no explicit session and deployment supports sessions, start implicit session.
+	if cmd.Session == nil && topo.SupportsSessions() {
+		cmd.Session, err = session.NewClientSession(pool, clientID, session.Implicit)
+		if err != nil {
+			return result.Delete{}, err
+		}
+		defer cmd.Session.EndSession()
+	}
+
 	di, err := cmd.RoundTrip(ctx, desc, conn)
 	span.Annotatef(nil, "Finished invoking cmd.RoundTrip")
 	if err != nil {
@@ -93,4 +91,5 @@ func Delete(
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 	}
 	return di, err
+
 }

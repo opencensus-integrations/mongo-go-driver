@@ -6,7 +6,6 @@ import (
 	"reflect"
 
 	"github.com/mongodb/mongo-go-driver/core/option"
-	"github.com/mongodb/mongo-go-driver/core/writeconcern"
 	"github.com/mongodb/mongo-go-driver/internal/testutil/helpers"
 )
 
@@ -135,17 +134,19 @@ func TestFindAndDeleteOneOpt(t *testing.T) {
 	t.Run("TestAll", func(t *testing.T) {
 		proj := Projection(true)
 		sort := Sort(true)
-		wc := writeconcern.New(writeconcern.W(10))
 
-		opts := []DeleteOne{
+		opts := []DeleteOneOption{
 			MaxTime(5),
 			Projection(proj),
 			Sort(sort),
-			WriteConcern(wc),
 		}
-		bundle := BundleDeleteOne(opts...)
+		params := make([]DeleteOne, len(opts))
+		for i := range opts {
+			params[i] = opts[i]
+		}
+		bundle := BundleDeleteOne(params...)
 
-		deleteOpts, err := bundle.Unbundle(true)
+		deleteOpts, _, err := bundle.Unbundle(true)
 		testhelpers.RequireNil(t, err, "got non-nill error from unbundle: %s", err)
 
 		if len(deleteOpts) != len(opts) {
@@ -156,6 +157,23 @@ func TestFindAndDeleteOneOpt(t *testing.T) {
 			if !reflect.DeepEqual(opt.ConvertDeleteOneOption(), deleteOpts[i]) {
 				t.Errorf("opt mismatch. expected %#v, got %#v", opt, deleteOpts[i])
 			}
+		}
+	})
+
+	t.Run("Nil Option Bundle", func(t *testing.T) {
+		sess := FindSessionOpt{}
+		opts, _, err := BundleDeleteOne(Sort(true), BundleDeleteOne(nil), sess, nil).unbundle()
+		testhelpers.RequireNil(t, err, "got non-nil error from unbundle: %s", err)
+
+		if len(opts) != 1 {
+			t.Errorf("expected bundle length 1. got: %d", len(opts))
+		}
+
+		opts, _, err = BundleDeleteOne(nil, sess, BundleDeleteOne(nil), Sort(true)).unbundle()
+		testhelpers.RequireNil(t, err, "got non-nil error from unbundle: %s", err)
+
+		if len(opts) != 1 {
+			t.Errorf("expected bundle length 1. got: %d", len(opts))
 		}
 	})
 
@@ -197,7 +215,7 @@ func TestFindAndDeleteOneOpt(t *testing.T) {
 
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
-				options, err := tc.bundle.Unbundle(tc.dedup)
+				options, _, err := tc.bundle.Unbundle(tc.dedup)
 				testhelpers.RequireNil(t, err, "got non-nill error from unbundle: %s", err)
 
 				if len(options) != len(tc.expectedOpts) {

@@ -11,8 +11,9 @@ import (
 
 	"github.com/mongodb/mongo-go-driver/core/command"
 	"github.com/mongodb/mongo-go-driver/core/description"
-	"github.com/mongodb/mongo-go-driver/core/readconcern"
+	"github.com/mongodb/mongo-go-driver/core/session"
 	"github.com/mongodb/mongo-go-driver/core/topology"
+	"github.com/mongodb/mongo-go-driver/core/uuid"
 
 	"go.opencensus.io/trace"
 )
@@ -24,7 +25,8 @@ func Count(
 	cmd command.Count,
 	topo *topology.Topology,
 	selector description.ServerSelector,
-	rc *readconcern.ReadConcern,
+	clientID uuid.UUID,
+	pool *session.Pool,
 ) (int64, error) {
 
 	ctx, span := trace.StartSpan(ctx, "mongo-go/core/dispatch.Count")
@@ -38,17 +40,6 @@ func Count(
 		return 0, err
 	}
 
-	if rc != nil {
-		span.Annotatef(nil, "Creating readConcernOption")
-		opt, err := readConcernOption(rc)
-		span.Annotatef(nil, "Finished creating readConcernOption")
-		if err != nil {
-			span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
-			return 0, err
-		}
-		cmd.Opts = append(cmd.Opts, opt)
-	}
-
 	desc := ss.Description()
 	span.Annotatef(nil, "Creating Connection")
 	conn, err := ss.Connection(ctx)
@@ -58,6 +49,15 @@ func Count(
 		return 0, err
 	}
 	defer conn.Close()
+
+	// If no explicit session and deployment supports sessions, start implicit session.
+	if cmd.Session == nil && topo.SupportsSessions() {
+		cmd.Session, err = session.NewClientSession(pool, clientID, session.Implicit)
+		if err != nil {
+			return 0, err
+		}
+		defer cmd.Session.EndSession()
+	}
 
 	cur, err := cmd.RoundTrip(ctx, desc, conn)
 	if err != nil {
