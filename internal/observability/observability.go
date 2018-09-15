@@ -39,7 +39,7 @@ var (
 	MConnectionsReused = stats.Int64("mongo/client/connections_reused", "The number of reused connections", dimensionless)
 	MConnectionsClosed = stats.Int64("mongo/client/connections_closed", "The number of closed connections", dimensionless)
 
-	MConnectionLatencyMilliseconds = stats.Int64("mongo/client/connection_latency", "The latency to make a connection", dimensionless)
+	MConnectionLatencyMilliseconds = stats.Int64("mongo/client/connection_latency", "The latency to make a connection", ms)
 	MRoundTripLatencyMilliseconds  = stats.Float64("mongo/client/roundtrip_latency", "The roundtrip latency of commands in milliseconds", ms)
 )
 
