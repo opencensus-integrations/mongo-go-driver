@@ -19,7 +19,7 @@ var KeyPart, _ = tag.NewKey("part")
 var (
 	// MErrors is representative of all errors, differentiated by the tag of the command e.g:
 	//   "write", "read", "drop", "decode", "connection", "find", "distinction"
-	MErrors = stats.Int64("mongo/client/etrors", "The number of errors encountered", dimensionless)
+	MErrors = stats.Int64("mongo/client/errors", "The number of errors encountered", dimensionless)
 
 	// MCalls is representative of all calls, differentiated by the tag of the command e.g:
 	//   "write", "read", "drop", "decode", "connection", "find", "distinction"
