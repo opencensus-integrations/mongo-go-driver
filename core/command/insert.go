@@ -38,6 +38,7 @@ type Insert struct {
 	WriteConcern *writeconcern.WriteConcern
 	Session      *session.Client
 
+	batches         []*Write
 	result          result.Insert
 	err             error
 	continueOnError bool
@@ -91,13 +92,13 @@ splitInserts:
 
 // Encode will encode this command into a wire message for the given server description.
 func (i *Insert) Encode(desc description.SelectedServer) ([]wiremessage.WireMessage, error) {
-	cmds, err := i.encode(desc)
+	err := i.encode(desc)
 	if err != nil {
 		return nil, err
 	}
 
-	wms := make([]wiremessage.WireMessage, len(cmds))
-	for _, cmd := range cmds {
+	wms := make([]wiremessage.WireMessage, len(i.batches))
+	for _, cmd := range i.batches {
 		wm, err := cmd.Encode(desc)
 		if err != nil {
 			return nil, err
@@ -145,23 +146,21 @@ func (i *Insert) encodeBatch(docs []*bson.Document, desc description.SelectedSer
 	}, nil
 }
 
-func (i *Insert) encode(desc description.SelectedServer) ([]*Write, error) {
-	out := []*Write{}
+func (i *Insert) encode(desc description.SelectedServer) error {
 	batches, err := i.split(int(desc.MaxBatchCount), int(desc.MaxDocumentSize))
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	for _, docs := range batches {
 		cmd, err := i.encodeBatch(docs, desc)
 		if err != nil {
-			return nil, err
+			return err
 		}
 
-		out = append(out, cmd)
+		i.batches = append(i.batches, cmd)
 	}
-
-	return out, nil
+	return nil
 }
 
 // Decode will decode the wire message using the provided server description. Errors during decoding
@@ -198,18 +197,29 @@ func (i *Insert) RoundTrip(ctx context.Context, desc description.SelectedServer,
 	defer span.End()
 
 	res := result.Insert{}
-	span.Annotatef(nil, "Encoding")
-	cmds, err := i.encode(desc)
-	span.Annotatef(nil, "Finished encoding")
-	if err != nil {
-		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
-		return res, err
+	if i.batches == nil {
+		span.Annotatef(nil, "Encoding")
+		err := i.encode(desc)
+		span.Annotatef(nil, "Finished encoding")
+		if err != nil {
+			span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
+			return res, err
+		}
 	}
 
-	for _, cmd := range cmds {
+	// hold onto txnNumber, reset it when loop exits to ensure reuse of same
+	// transaction number if retry is needed
+	var txnNumber int64
+	if i.Session != nil && i.Session.RetryWrite {
+		txnNumber = i.Session.TxnNumber
+	}
+	for j, cmd := range i.batches {
 		rdr, err := cmd.RoundTrip(ctx, desc, rw)
 		if err != nil {
 			span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
+			if i.Session != nil && i.Session.RetryWrite {
+				i.Session.TxnNumber = txnNumber + int64(j)
+			}
 			return res, err
 		}
 
@@ -223,6 +233,10 @@ func (i *Insert) RoundTrip(ctx context.Context, desc description.SelectedServer,
 
 		if r.WriteConcernError != nil {
 			res.WriteConcernError = r.WriteConcernError
+			if i.Session != nil && i.Session.RetryWrite {
+				i.Session.TxnNumber = txnNumber
+				return res, nil // report writeconcernerror for retry
+			}
 		}
 
 		res.N += r.N
@@ -230,6 +244,18 @@ func (i *Insert) RoundTrip(ctx context.Context, desc description.SelectedServer,
 		if !i.continueOnError && len(res.WriteErrors) > 0 {
 			return res, nil
 		}
+
+		// Increment txnNumber for each batch
+		if i.Session != nil && i.Session.RetryWrite {
+			i.Session.IncrementTxnNumber()
+			i.batches = i.batches[1:] // if batch encoded successfully, remove it from the slice
+		}
+	}
+
+	if i.Session != nil && i.Session.RetryWrite {
+		// if retryable write succeeded, transaction number will be incremented one extra time,
+		// so we decrement it here
+		i.Session.TxnNumber--
 	}
 
 	return res, nil

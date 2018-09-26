@@ -1,3 +1,9 @@
+// Copyright (C) MongoDB, Inc. 2017-present.
+//
+// Licensed under the Apache License, Version 2.0 (the "License"); you may
+// not use this file except in compliance with the License. You may obtain
+// a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
+
 package mongo
 
 import (
@@ -100,6 +106,7 @@ func TestClientOptions_chainAll(t *testing.T) {
 		ReadConcern(rc).
 		ReadPreference(rp).
 		ReplicaSet("foo").
+		RetryWrites(true).
 		ServerSelectionTimeout(time.Second).
 		Single(false).
 		SocketTimeout(2 * time.Second).
@@ -129,23 +136,23 @@ func TestClientOptions_chainAll(t *testing.T) {
 				"mongodb://localhost:27018",
 				"mongodb://localhost:27019",
 			},
-			LocalThresholdSet:         true,
-			LocalThreshold:            time.Second,
-			MaxConnIdleTime:           30 * time.Second,
-			MaxConnIdleTimeSet:        true,
-			MaxConnsPerHost:           150,
-			MaxConnsPerHostSet:        true,
-			MaxIdleConnsPerHost:       20,
-			MaxIdleConnsPerHostSet:    true,
-			ReplicaSet:                "foo",
-			ServerSelectionTimeoutSet: true,
-			ServerSelectionTimeout:    time.Second,
-			Connect:                   connstring.AutoConnect,
-			ConnectSet:                true,
-			SocketTimeout:             2 * time.Second,
-			SocketTimeoutSet:          true,
-			SSL:                       true,
-			SSLSet:                    true,
+			LocalThresholdSet:                  true,
+			LocalThreshold:                     time.Second,
+			MaxConnIdleTime:                    30 * time.Second,
+			MaxConnIdleTimeSet:                 true,
+			MaxConnsPerHost:                    150,
+			MaxConnsPerHostSet:                 true,
+			MaxIdleConnsPerHost:                20,
+			MaxIdleConnsPerHostSet:             true,
+			ReplicaSet:                         "foo",
+			ServerSelectionTimeoutSet:          true,
+			ServerSelectionTimeout:             time.Second,
+			Connect:                            connstring.AutoConnect,
+			ConnectSet:                         true,
+			SocketTimeout:                      2 * time.Second,
+			SocketTimeoutSet:                   true,
+			SSL:                                true,
+			SSLSet:                             true,
 			SSLClientCertificateKeyFile:        "client.pem",
 			SSLClientCertificateKeyFileSet:     true,
 			SSLClientCertificateKeyPassword:    nil,
@@ -158,6 +165,8 @@ func TestClientOptions_chainAll(t *testing.T) {
 		ReadConcern:    rc,
 		ReadPreference: rp,
 		WriteConcern:   wc,
+		RetryWrites:    true,
+		RetryWritesSet: true,
 	}
 
 	client, err := opts.Unbundle(connstring.ConnString{})

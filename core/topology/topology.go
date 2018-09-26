@@ -50,7 +50,7 @@ const (
 	SingleMode
 )
 
-// Topology respresents a MongoDB deployment.
+// Topology represents a MongoDB deployment.
 type Topology struct {
 	connectionstate int32
 

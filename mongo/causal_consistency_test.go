@@ -1,6 +1,13 @@
+// Copyright (C) MongoDB, Inc. 2017-present.
+//
+// Licensed under the Apache License, Version 2.0 (the "License"); you may
+// not use this file except in compliance with the License. You may obtain
+// a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
+
 package mongo
 
 import (
+	"context"
 	"os"
 	"reflect"
 	"testing"
@@ -17,10 +24,10 @@ var ccStarted *event.CommandStartedEvent
 var ccSucceeded *event.CommandSucceededEvent
 
 var ccMonitor = &event.CommandMonitor{
-	Started: func(cse *event.CommandStartedEvent) {
+	Started: func(ctx context.Context, cse *event.CommandStartedEvent) {
 		ccStarted = cse
 	},
-	Succeeded: func(cse *event.CommandSucceededEvent) {
+	Succeeded: func(ctx context.Context, cse *event.CommandSucceededEvent) {
 		ccSucceeded = cse
 	},
 }
@@ -174,7 +181,7 @@ func TestCausalConsistency(t *testing.T) {
 		client := createSessionsMonitoredClient(t, ccMonitor)
 		sess, err := client.StartSession()
 		testhelpers.RequireNil(t, err, "error creating session: %s", err)
-		defer sess.EndSession()
+		defer sess.EndSession(ctx)
 
 		if sess.OperationTime != nil {
 			t.Fatal("operation time is not nil")
@@ -187,7 +194,7 @@ func TestCausalConsistency(t *testing.T) {
 		client := createSessionsMonitoredClient(t, ccMonitor)
 		sess, err := client.StartSession(sessionopt.CausalConsistency(true))
 		testhelpers.RequireNil(t, err, "error creating session: %s", err)
-		defer sess.EndSession()
+		defer sess.EndSession(ctx)
 
 		db := client.Database("FirstCommandDB")
 		err = db.Drop(ctx)
@@ -214,7 +221,7 @@ func TestCausalConsistency(t *testing.T) {
 		client := createSessionsMonitoredClient(t, ccMonitor)
 		sess, err := client.StartSession()
 		testhelpers.RequireNil(t, err, "error starting session: %s", err)
-		defer sess.EndSession()
+		defer sess.EndSession(ctx)
 
 		db := client.Database("OptimeUpdateDB")
 		err = db.Drop(ctx)
@@ -243,7 +250,7 @@ func TestCausalConsistency(t *testing.T) {
 			t.Run(tc.name, func(t *testing.T) {
 				sess, err := client.StartSession(sessionopt.CausalConsistency(true))
 				testhelpers.RequireNil(t, err, "error creating session for %s: %s", tc.name, err)
-				defer sess.EndSession()
+				defer sess.EndSession(ctx)
 
 				opts := append(tc.opts, sess)
 				docRes := coll.FindOne(ctx, emptyDoc, sess)
@@ -276,7 +283,7 @@ func TestCausalConsistency(t *testing.T) {
 			t.Run(tc.name, func(t *testing.T) {
 				sess, err := client.StartSession(sessionopt.CausalConsistency(true))
 				testhelpers.RequireNil(t, err, "error starting session: %s", err)
-				defer sess.EndSession()
+				defer sess.EndSession(ctx)
 
 				opts := append(tc.opts, sess)
 				returnVals := tc.f.Call(getOptValues(opts))
@@ -303,7 +310,7 @@ func TestCausalConsistency(t *testing.T) {
 		client := createSessionsMonitoredClient(t, ccMonitor)
 		sess, err := client.StartSession(sessionopt.CausalConsistency(false))
 		testhelpers.RequireNil(t, err, "error creating session: %s", err)
-		defer sess.EndSession()
+		defer sess.EndSession(ctx)
 
 		db := client.Database("NonConsistentReadDB")
 		err = db.Drop(ctx)
@@ -333,7 +340,7 @@ func TestCausalConsistency(t *testing.T) {
 
 		sess, err := client.StartSession(sessionopt.CausalConsistency(true))
 		testhelpers.RequireNil(t, err, "error starting session: %s", err)
-		defer sess.EndSession()
+		defer sess.EndSession(ctx)
 
 		coll := db.Collection("InvalidTopologyColl")
 		_, _ = coll.Find(ctx, emptyDoc, sess)
@@ -386,7 +393,7 @@ func TestCausalConsistency(t *testing.T) {
 		client := createSessionsMonitoredClient(t, ccMonitor)
 		sess, err := client.StartSession(sessionopt.CausalConsistency(true))
 		testhelpers.RequireNil(t, err, "error starting session: %s", err)
-		defer sess.EndSession()
+		defer sess.EndSession(ctx)
 
 		db := client.Database("CustomReadConcernDB")
 		err = db.Drop(ctx)
@@ -414,7 +421,7 @@ func TestCausalConsistency(t *testing.T) {
 		client := createSessionsMonitoredClient(t, nil)
 		sess, err := client.StartSession(sessionopt.CausalConsistency(true))
 		testhelpers.RequireNil(t, err, "error starting session: %s", err)
-		defer sess.EndSession()
+		defer sess.EndSession(ctx)
 
 		db := client.Database("UnackWriteDB")
 		err = db.Drop(ctx)

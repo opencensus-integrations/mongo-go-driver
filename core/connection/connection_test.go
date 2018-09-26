@@ -87,6 +87,3 @@ func (d *dialer) lenclosed() int {
 	defer d.Unlock()
 	return len(d.closed)
 }
-
-func BenchmarkReadWireMessage(b *testing.B) {
-}

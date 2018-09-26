@@ -1,3 +1,9 @@
+// Copyright (C) MongoDB, Inc. 2017-present.
+//
+// Licensed under the Apache License, Version 2.0 (the "License"); you may
+// not use this file except in compliance with the License. You may obtain
+// a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
+
 package session
 
 import (
@@ -14,20 +20,20 @@ func TestSessionPool(t *testing.T) {
 		p.timeout = 30 // Set to some arbitrarily high number greater than 1 minute.
 
 		first, err := p.GetSession()
-		testhelpers.RequireNil(t, err, "error getting session", err)
+		testhelpers.RequireNil(t, err, "error getting session %s", err)
 		firstID := first.SessionID
 
 		second, err := p.GetSession()
-		testhelpers.RequireNil(t, err, "error getting session", err)
+		testhelpers.RequireNil(t, err, "error getting session %s", err)
 		secondID := second.SessionID
 
 		p.ReturnSession(first)
 		p.ReturnSession(second)
 
 		sess, err := p.GetSession()
-		testhelpers.RequireNil(t, err, "error getting session", err)
+		testhelpers.RequireNil(t, err, "error getting session %s", err)
 		nextSess, err := p.GetSession()
-		testhelpers.RequireNil(t, err, "error getting session", err)
+		testhelpers.RequireNil(t, err, "error getting session %s", err)
 
 		if sess.SessionID != secondID {
 			t.Errorf("first sesssion ID mismatch. got %s expected %s", sess.SessionID, secondID)
@@ -45,18 +51,18 @@ func TestSessionPool(t *testing.T) {
 		p.timeout = 0
 
 		first, err := p.GetSession()
-		testhelpers.RequireNil(t, err, "error getting session", err)
+		testhelpers.RequireNil(t, err, "error getting session %s", err)
 		firstID := first.SessionID
 
 		second, err := p.GetSession()
-		testhelpers.RequireNil(t, err, "error getting session", err)
+		testhelpers.RequireNil(t, err, "error getting session %s", err)
 		secondID := second.SessionID
 
 		p.ReturnSession(first)
 		p.ReturnSession(second)
 
 		sess, err := p.GetSession()
-		testhelpers.RequireNil(t, err, "error getting session", err)
+		testhelpers.RequireNil(t, err, "error getting session %s", err)
 
 		if sess.SessionID == firstID || sess.SessionID == secondID {
 			t.Errorf("Expired sessions not removed!")

@@ -389,7 +389,7 @@ func canMonitor(cmd string) bool {
 	return true
 }
 
-func (c *connection) commandStartedEvent(wm wiremessage.WireMessage) error {
+func (c *connection) commandStartedEvent(ctx context.Context, wm wiremessage.WireMessage) error {
 	if c.cmdMonitor == nil || c.cmdMonitor.Started == nil {
 		return nil
 	}
@@ -448,7 +448,7 @@ func (c *connection) commandStartedEvent(wm wiremessage.WireMessage) error {
 		startedEvent.Command = emptyDoc
 	}
 
-	c.cmdMonitor.Started(startedEvent)
+	c.cmdMonitor.Started(ctx, startedEvent)
 
 	if !acknowledged {
 		if c.cmdMonitor.Succeeded == nil {
@@ -463,7 +463,7 @@ func (c *connection) commandStartedEvent(wm wiremessage.WireMessage) error {
 			ConnectionID:  c.id,
 		}
 
-		c.cmdMonitor.Succeeded(&event.CommandSucceededEvent{
+		c.cmdMonitor.Succeeded(ctx, &event.CommandSucceededEvent{
 			CommandFinishedEvent: finishedEvent,
 			Reply: bson.NewDocument(
 				bson.EC.Int32("ok", 1),
@@ -520,7 +520,7 @@ func processReply(reply *bson.Document) (bool, string) {
 	return false, fullErrMsg
 }
 
-func (c *connection) commandFinishedEvent(wm wiremessage.WireMessage) error {
+func (c *connection) commandFinishedEvent(ctx context.Context, wm wiremessage.WireMessage) error {
 	if c.cmdMonitor == nil {
 		return nil
 	}
@@ -563,7 +563,7 @@ func (c *connection) commandFinishedEvent(wm wiremessage.WireMessage) error {
 				Reply:                emptyDoc,
 				CommandFinishedEvent: finishedEvent,
 			}
-			c.cmdMonitor.Succeeded(successEvent)
+			c.cmdMonitor.Succeeded(ctx, successEvent)
 			return nil
 		}
 
@@ -584,7 +584,7 @@ func (c *connection) commandFinishedEvent(wm wiremessage.WireMessage) error {
 			CommandFinishedEvent: finishedEvent,
 		}
 
-		c.cmdMonitor.Succeeded(successEvent)
+		c.cmdMonitor.Succeeded(ctx, successEvent)
 		return nil
 	}
 
@@ -593,7 +593,7 @@ func (c *connection) commandFinishedEvent(wm wiremessage.WireMessage) error {
 		CommandFinishedEvent: finishedEvent,
 	}
 
-	c.cmdMonitor.Failed(failureEvent)
+	c.cmdMonitor.Failed(ctx, failureEvent)
 	return nil
 }
 
@@ -671,7 +671,7 @@ func (c *connection) WriteWireMessage(ctx context.Context, wm wiremessage.WireMe
 	}
 
 	c.bumpIdleDeadline()
-	err = c.commandStartedEvent(wm)
+	err = c.commandStartedEvent(ctx, wm)
 	if err != nil {
 		return err
 	}
@@ -743,7 +743,7 @@ func (c *connection) ReadWireMessage(ctx context.Context) (wiremessage.WireMessa
 
 	// Isn't the best reuse, but resizing a []byte to be larger
 	// is difficult.
-	if len(c.readBuf) > int(size) {
+	if cap(c.readBuf) > int(size) {
 		c.readBuf = c.readBuf[:size]
 	} else {
 		c.readBuf = make([]byte, size)
@@ -848,7 +848,7 @@ func (c *connection) ReadWireMessage(ctx context.Context) (wiremessage.WireMessa
 	}
 
 	c.bumpIdleDeadline()
-	err = c.commandFinishedEvent(wm)
+	err = c.commandFinishedEvent(ctx, wm)
 	if err != nil {
 		return nil, err // TODO: do we care if monitoring fails?
 	}

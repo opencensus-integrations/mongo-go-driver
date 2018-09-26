@@ -29,6 +29,7 @@ func FindOneAndDelete(
 	selector description.ServerSelector,
 	clientID uuid.UUID,
 	pool *session.Pool,
+	retryWrite bool,
 ) (result.FindAndModify, error) {
 
 	ctx, span := trace.StartSpan(ctx, "mongo-go/core/dispatch.FindOneAndDelete")
@@ -42,11 +43,59 @@ func FindOneAndDelete(
 		return result.FindAndModify{}, err
 	}
 
+	// If no explicit session and deployment supports sessions, start implicit session.
+	if cmd.Session == nil && topo.SupportsSessions() {
+		cmd.Session, err = session.NewClientSession(pool, clientID, session.Implicit)
+		if err != nil {
+			return result.FindAndModify{}, err
+		}
+		defer cmd.Session.EndSession()
+	}
+
+	// Execute in a single trip if retry writes not supported, or retry not enabled
+	if !retrySupported(topo, ss.Description(), cmd.Session, cmd.WriteConcern) || !retryWrite {
+		if cmd.Session != nil {
+			cmd.Session.RetryWrite = false // explicitly set to false to prevent encoding transaction number
+		}
+		return findOneAndDelete(ctx, span, cmd, ss, nil)
+	}
+
+	cmd.Session.RetryWrite = retryWrite
+	cmd.Session.IncrementTxnNumber()
+
+	res, originalErr := findOneAndDelete(ctx, span, cmd, ss, nil)
+
+	// Retry if appropriate
+	if cerr, ok := originalErr.(command.Error); ok && cerr.Retryable() {
+		ss, err := topo.SelectServer(ctx, selector)
+
+		// Return original error if server selection fails or new server does not support retryable writes
+		if err != nil || !retrySupported(topo, ss.Description(), cmd.Session, cmd.WriteConcern) {
+			return result.FindAndModify{}, originalErr
+		}
+
+		return findOneAndDelete(ctx, span, cmd, ss, cerr)
+	}
+
+	return res, originalErr
+}
+
+func findOneAndDelete(
+	ctx context.Context,
+	span *trace.Span,
+	cmd command.FindOneAndDelete,
+	ss *topology.SelectedServer,
+	oldErr error,
+) (result.FindAndModify, error) {
 	desc := ss.Description()
 	span.Annotatef(nil, "Invoking ss.Connection")
 	conn, err := ss.Connection(ctx)
 	span.Annotatef(nil, "Finished invoking ss.Connection")
 	if err != nil {
+		if oldErr != nil {
+			span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: oldErr.Error()})
+			return result.FindAndModify{}, oldErr
+		}
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 		return result.FindAndModify{}, err
 	}
@@ -64,15 +113,6 @@ func FindOneAndDelete(
 	}
 	defer conn.Close()
 
-	// If no explicit session and deployment supports sessions, start implicit session.
-	if cmd.Session == nil && topo.SupportsSessions() {
-		cmd.Session, err = session.NewClientSession(pool, clientID, session.Implicit)
-		if err != nil {
-			return result.FindAndModify{}, err
-		}
-		defer cmd.Session.EndSession()
-	}
-
 	span.Annotatef(nil, "Invoking cmd.RoundTrip")
 	fim, err := cmd.RoundTrip(ctx, desc, conn)
 	span.Annotatef(nil, "Finished invoking cmd.RoundTrip")
@@ -80,5 +120,4 @@ func FindOneAndDelete(
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 	}
 	return fim, err
-
 }

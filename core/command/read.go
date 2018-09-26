@@ -1,3 +1,9 @@
+// Copyright (C) MongoDB, Inc. 2017-present.
+//
+// Licensed under the Apache License, Version 2.0 (the "License"); you may
+// not use this file except in compliance with the License. You may obtain
+// a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
+
 package command
 
 import (
@@ -192,7 +198,7 @@ func (r *Read) Encode(desc description.SelectedServer) (wiremessage.WireMessage,
 		return nil, err
 	}
 
-	err = addSessionID(cmd, desc, r.Session)
+	err = addSessionFields(cmd, desc, r.Session)
 	if err != nil {
 		return nil, err
 	}
@@ -255,11 +261,19 @@ func (r *Read) RoundTrip(ctx context.Context, desc description.SelectedServer, r
 
 	err = rw.WriteWireMessage(ctx, wm)
 	if err != nil {
-		return nil, err
+		if _, ok := err.(Error); ok {
+			return nil, err
+		}
+		// Connection errors are transient
+		return nil, Error{Message: err.Error(), Labels: []string{TransientTransactionError, NetworkError}}
 	}
 	wm, err = rw.ReadWireMessage(ctx)
 	if err != nil {
-		return nil, err
+		if _, ok := err.(Error); ok {
+			return nil, err
+		}
+		// Connection errors are transient
+		return nil, Error{Message: err.Error(), Labels: []string{TransientTransactionError, NetworkError}}
 	}
 
 	if r.Session != nil {

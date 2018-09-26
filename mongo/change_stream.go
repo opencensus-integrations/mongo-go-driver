@@ -10,11 +10,13 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"time"
 
 	"github.com/mongodb/mongo-go-driver/bson"
 	"github.com/mongodb/mongo-go-driver/core/command"
 	"github.com/mongodb/mongo-go-driver/core/option"
 	"github.com/mongodb/mongo-go-driver/core/session"
+	"github.com/mongodb/mongo-go-driver/mongo/aggregateopt"
 	"github.com/mongodb/mongo-go-driver/mongo/changestreamopt"
 
 	"go.opencensus.io/trace"
@@ -63,11 +65,19 @@ func newChangeStream(ctx context.Context, coll *Collection, pipeline interface{}
 	}
 
 	changeStreamOptions := bson.NewDocument()
+	aggOptions := make([]aggregateopt.Aggregate, 0)
 
 	for _, opt := range csOpts {
-		err = opt.Option(changeStreamOptions)
-		if err != nil {
-			return nil, err
+		switch t := opt.(type) {
+		case nil:
+			continue
+		case option.OptMaxAwaitTime:
+			aggOptions = append(aggOptions, aggregateopt.MaxAwaitTime(time.Duration(t)))
+		default:
+			err = opt.Option(changeStreamOptions)
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -77,7 +87,7 @@ func newChangeStream(ctx context.Context, coll *Collection, pipeline interface{}
 				bson.EC.SubDocument("$changeStream", changeStreamOptions))))
 
 	span.Annotatef(nil, "Starting the pipeline aggregation")
-	cursor, err := coll.Aggregate(ctx, pipelineArr)
+	cursor, err := coll.Aggregate(ctx, pipelineArr, aggOptions...)
 	span.Annotatef(nil, "Finished the pipeline aggregation")
 	if err != nil {
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})

@@ -1,3 +1,9 @@
+// Copyright (C) MongoDB, Inc. 2017-present.
+//
+// Licensed under the Apache License, Version 2.0 (the "License"); you may
+// not use this file except in compliance with the License. You may obtain
+// a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
+
 package mongo
 
 import (
@@ -32,20 +38,20 @@ var failedChan = make(chan *event.CommandFailedEvent, 100)
 var cursorID int64
 
 var monitor = &event.CommandMonitor{
-	Started: func(cse *event.CommandStartedEvent) {
+	Started: func(ctx context.Context, cse *event.CommandStartedEvent) {
 		startedChan <- cse
 	},
-	Succeeded: func(cse *event.CommandSucceededEvent) {
+	Succeeded: func(ctx context.Context, cse *event.CommandSucceededEvent) {
 		succeededChan <- cse
 	},
-	Failed: func(cfe *event.CommandFailedEvent) {
+	Failed: func(ctx context.Context, cfe *event.CommandFailedEvent) {
 		failedChan <- cfe
 	},
 }
 
-func createMonitoredClient(t *testing.T) *Client {
+func createMonitoredClient(t *testing.T, monitor *event.CommandMonitor) *Client {
 	return &Client{
-		topology:       testutil.MonitoredTopology(t, monitor),
+		topology:       testutil.GlobalMonitoredTopology(t, monitor),
 		connString:     testutil.ConnString(t),
 		readPreference: readpref.Primary(),
 		clock:          &session.ClusterClock{},
@@ -113,7 +119,7 @@ func runCmTestFile(t *testing.T, filepath string) {
 	doc, err := bson.ParseExtJSONObject(string(content))
 	testhelpers.RequireNil(t, err, "error converting JSON to BSON: %s", err)
 
-	client := createMonitoredClient(t)
+	client := createMonitoredClient(t, monitor)
 	db := client.Database(doc.Lookup("database_name").StringValue())
 
 	serverVersionStr, err := getServerVersion(db)
@@ -161,7 +167,7 @@ func runCmTestFile(t *testing.T, filepath string) {
 
 		coll := db.Collection(collName)
 		err = insertDocuments(doc.Lookup("data").MutableArray(), coll)
-		testhelpers.RequireNil(t, err, "error inserting starting data: %s")
+		testhelpers.RequireNil(t, err, "error inserting starting data: %s", err)
 
 		operationDoc := testDoc.Lookup("operation").MutableDocument()
 

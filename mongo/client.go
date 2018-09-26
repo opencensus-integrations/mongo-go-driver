@@ -38,6 +38,7 @@ type Client struct {
 	topology        *topology.Topology
 	connString      connstring.ConnString
 	localThreshold  time.Duration
+	retryWrites     bool
 	clock           *session.ClusterClock
 	readPreference  *readpref.ReadPref
 	readConcern     *readconcern.ReadConcern
@@ -110,13 +111,37 @@ func (c *Client) Disconnect(ctx context.Context) error {
 	return c.topology.Disconnect(ctx)
 }
 
+// Ping verifies that the client can connect to the topology.
+// If readPreference is nil then will use the client's default read
+// preference.
+func (c *Client) Ping(ctx context.Context, rp *readpref.ReadPref) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	if rp == nil {
+		rp = c.readPreference
+	}
+
+	_, err := c.topology.SelectServer(ctx, description.ReadPrefSelector(rp))
+	return err
+}
+
 // StartSession starts a new session.
 func (c *Client) StartSession(opts ...sessionopt.Session) (*Session, error) {
 	if c.topology.SessionPool == nil {
 		return nil, topology.ErrTopologyClosed
 	}
 
-	sessionOpts, err := sessionopt.BundleSession(opts...).Unbundle(true)
+	// By default the session inherits the default read/write concerns of the client
+	defaultOpts := []sessionopt.Session{
+		sessionopt.DefaultReadConcern(c.readConcern),
+		sessionopt.DefaultReadPreference(c.readPreference),
+		sessionopt.DefaultWriteConcern(c.writeConcern),
+	}
+
+	// If the user provided the default read/write concerns explicitly, this will overwrite with them.
+	sessionOpts, err := sessionopt.BundleSession(append(defaultOpts, opts...)...).Unbundle(true)
 	if err != nil {
 		return nil, err
 	}
@@ -126,8 +151,11 @@ func (c *Client) StartSession(opts ...sessionopt.Session) (*Session, error) {
 		return nil, err
 	}
 
+	sess.RetryWrite = c.retryWrites
+
 	return &Session{
 		Client: sess,
+		topo:   c.topology,
 	}, nil
 }
 

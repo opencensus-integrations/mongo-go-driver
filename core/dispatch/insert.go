@@ -29,6 +29,7 @@ func Insert(
 	selector description.ServerSelector,
 	clientID uuid.UUID,
 	pool *session.Pool,
+	retryWrite bool,
 ) (result.Insert, error) {
 
 	ctx, span := trace.StartSpan(ctx, "mongo-go/core/dispatch.Insert")
@@ -42,9 +43,58 @@ func Insert(
 		return result.Insert{}, err
 	}
 
+	// If no explicit session and deployment supports sessions, start implicit session.
+	if cmd.Session == nil && topo.SupportsSessions() {
+		cmd.Session, err = session.NewClientSession(pool, clientID, session.Implicit)
+		if err != nil {
+			return result.Insert{}, err
+		}
+		defer cmd.Session.EndSession()
+	}
+
+	// Execute in a single trip if retry writes not supported, or retry not enabled
+	if !retrySupported(topo, ss.Description(), cmd.Session, cmd.WriteConcern) || !retryWrite {
+		if cmd.Session != nil {
+			cmd.Session.RetryWrite = false // explicitly set to false to prevent encoding transaction number
+		}
+		return insert(ctx, span, cmd, ss, nil)
+	}
+
+	// TODO figure out best place to put retry write.  Command shouldn't have to know about this field.
+	cmd.Session.RetryWrite = retryWrite
+	cmd.Session.IncrementTxnNumber()
+
+	res, originalErr := insert(ctx, span, cmd, ss, nil)
+
+	// Retry if appropriate
+	if cerr, ok := originalErr.(command.Error); ok && cerr.Retryable() ||
+		res.WriteConcernError != nil && command.IsWriteConcernErrorRetryable(res.WriteConcernError) {
+		ss, err := topo.SelectServer(ctx, selector)
+
+		// Return original error if server selection fails or new server does not support retryable writes
+		if err != nil || !retrySupported(topo, ss.Description(), cmd.Session, cmd.WriteConcern) {
+			return res, originalErr
+		}
+
+		return insert(ctx, span, cmd, ss, cerr)
+	}
+
+	return res, originalErr
+}
+
+func insert(
+	ctx context.Context,
+	span *trace.Span,
+	cmd command.Insert,
+	ss *topology.SelectedServer,
+	oldErr error,
+) (result.Insert, error) {
 	desc := ss.Description()
 	conn, err := ss.Connection(ctx)
 	if err != nil {
+		if oldErr != nil {
+			return result.Insert{}, oldErr
+		}
 		return result.Insert{}, err
 	}
 
@@ -61,15 +111,6 @@ func Insert(
 	}
 	defer conn.Close()
 
-	// If no explicit session and deployment supports sessions, start implicit session.
-	if cmd.Session == nil && topo.SupportsSessions() {
-		cmd.Session, err = session.NewClientSession(pool, clientID, session.Implicit)
-		if err != nil {
-			return result.Insert{}, err
-		}
-		defer cmd.Session.EndSession()
-	}
-
 	span.Annotatef(nil, "Invoking command.RoundTrip")
 	ri, err := cmd.RoundTrip(ctx, desc, conn)
 	span.Annotatef(nil, "Finished invoking command.RoundTrip")
@@ -77,5 +118,4 @@ func Insert(
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 	}
 	return ri, err
-
 }

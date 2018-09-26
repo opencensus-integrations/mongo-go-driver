@@ -32,6 +32,7 @@ func Delete(
 	selector description.ServerSelector,
 	clientID uuid.UUID,
 	pool *session.Pool,
+	retryWrite bool,
 ) (result.Delete, error) {
 
 	ctx, span := trace.StartSpan(ctx, "mongo-go/core/dispatch.Delete")
@@ -48,7 +49,52 @@ func Delete(
 		return result.Delete{}, err
 	}
 
+	// If no explicit session and deployment supports sessions, start implicit session.
+	if cmd.Session == nil && topo.SupportsSessions() && writeconcern.AckWrite(cmd.WriteConcern) {
+		cmd.Session, err = session.NewClientSession(pool, clientID, session.Implicit)
+		if err != nil {
+			return result.Delete{}, err
+		}
+		defer cmd.Session.EndSession()
+	}
+
+	// Execute in a single trip if retry writes not supported, or retry not enabled
+	if !retrySupported(topo, ss.Description(), cmd.Session, cmd.WriteConcern) || !retryWrite {
+		if cmd.Session != nil {
+			cmd.Session.RetryWrite = false // explicitly set to false to prevent encoding transaction number
+		}
+		return delete(ctx, span, cmd, ss, nil)
+	}
+
+	cmd.Session.RetryWrite = retryWrite
+	cmd.Session.IncrementTxnNumber()
+
+	res, originalErr := delete(ctx, span, cmd, ss, nil)
+
+	// Retry if appropriate
+	if cerr, ok := originalErr.(command.Error); ok && cerr.Retryable() ||
+		res.WriteConcernError != nil && command.IsWriteConcernErrorRetryable(res.WriteConcernError) {
+		ss, err := topo.SelectServer(ctx, selector)
+
+		// Return original error if server selection fails or new server does not support retryable writes
+		if err != nil || !retrySupported(topo, ss.Description(), cmd.Session, cmd.WriteConcern) {
+			return res, originalErr
+		}
+
+		return delete(ctx, span, cmd, ss, cerr)
+	}
+	return res, originalErr
+}
+
+func delete(
+	ctx context.Context,
+	span *trace.Span,
+	cmd command.Delete,
+	ss *topology.SelectedServer,
+	oldErr error,
+) (result.Delete, error) {
 	desc := ss.Description()
+
 	span.Annotatef(nil, "Creating ss.Connection")
 	conn, err := ss.Connection(ctx)
 	span.Annotatef(nil, "Finished creating ss.Connection")
@@ -56,6 +102,9 @@ func Delete(
 		ctx, _ = tag.New(ctx, tag.Upsert(observability.KeyPart, "connection"))
 		stats.Record(ctx, observability.MErrors.M(1))
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
+		if oldErr != nil {
+			return result.Delete{}, oldErr
+		}
 		return result.Delete{}, err
 	}
 
@@ -74,15 +123,6 @@ func Delete(
 	}
 	defer conn.Close()
 
-	// If no explicit session and deployment supports sessions, start implicit session.
-	if cmd.Session == nil && topo.SupportsSessions() {
-		cmd.Session, err = session.NewClientSession(pool, clientID, session.Implicit)
-		if err != nil {
-			return result.Delete{}, err
-		}
-		defer cmd.Session.EndSession()
-	}
-
 	di, err := cmd.RoundTrip(ctx, desc, conn)
 	span.Annotatef(nil, "Finished invoking cmd.RoundTrip")
 	if err != nil {
@@ -91,5 +131,4 @@ func Delete(
 		span.SetStatus(trace.Status{Code: int32(trace.StatusCodeInternal), Message: err.Error()})
 	}
 	return di, err
-
 }
